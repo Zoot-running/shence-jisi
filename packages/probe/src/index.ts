@@ -41,6 +41,13 @@ export function apply(ctx: Context): void {
         const effort = ctx.jisi.delegate(agent, work, { model: 'glm-4.6', reasoningEffort: 'max', background: false })
         const effortReport = await effort.report
         parts.push(`[delegate glm-4.6 effort=max] ${effortReport.status}: ${effortReport.text.trim()}`)
+        // kimi 基准：无 effort 与 effort=high 两条路径（供路由/诊断对照）。
+        const kimiPlain = ctx.jisi.delegate(agent, work, { model: 'kimi-k2.6', background: false })
+        const kimiPlainReport = await kimiPlain.report
+        parts.push(`[delegate kimi-k2.6] ${kimiPlainReport.status}: ${kimiPlainReport.text.trim()}`)
+        const kimiHigh = ctx.jisi.delegate(agent, work, { model: 'kimi-k2.6', reasoningEffort: 'high', background: false })
+        const kimiHighReport = await kimiHigh.report
+        parts.push(`[delegate kimi-k2.6 effort=high] ${kimiHighReport.status}: ${kimiHighReport.text.trim()}`)
         parts.push(`[listModels] ${JSON.stringify(await ctx.jisi.listModels())}`)
         return parts.join('\n')
       } catch (error) {

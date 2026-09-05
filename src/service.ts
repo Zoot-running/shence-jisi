@@ -26,6 +26,25 @@ function textOfBlocks(output: readonly ContentBlock[] | undefined): string {
   return output.filter(b => b.type === 'text').map(b => (b.type === 'text' ? b.text : '')).join('')
 }
 
+/**
+ * 目标模型是否宣告支持给定 effort。
+ * llmProvider/model 未知时保守返回 false（不透传，交给模型默认行为）。
+ */
+async function effortSupported(
+  llm: { resolveModelInfo(provider: string, model: string, signal?: AbortSignal): Promise<{ reasoning?: { efforts?: readonly { id: unknown }[] } }> },
+  llmProvider: string | undefined,
+  model: string | undefined,
+  effort: string,
+): Promise<boolean> {
+  if (llmProvider === undefined || model === undefined) return false
+  try {
+    const info = await llm.resolveModelInfo(llmProvider, model)
+    return info.reasoning?.efforts?.some(e => String(e.id) === effort) ?? false
+  } catch {
+    return false
+  }
+}
+
 /** 把子代理停因（字符串字面量）映射到通道报告状态。 */
 function reportStatus(stopReason: string | undefined): Report['status'] {
   if (stopReason === 'completed') return 'completed'
@@ -66,7 +85,12 @@ export function createJisiService(ctx: Context, provider: string): JisiService {
           }
           if (llmProvider !== undefined) agentOptions.provider = llmProvider
           if (opts.reasoningEffort !== undefined) {
-            agentOptions.reasoningEffort = opts.reasoningEffort as AgentOptions['reasoningEffort']
+            // effort 是 adapter 自有语义：只有目标模型宣告支持该 effort 才透传，
+            // 否则 DSH 子代理会因未宣告的 effort 静默失败（实测 kimi-k2.6 + high 即如此）。
+            const supported = await effortSupported(ctx.llm, llmProvider, opts.model, opts.reasoningEffort)
+            if (supported) {
+              agentOptions.reasoningEffort = opts.reasoningEffort as AgentOptions['reasoningEffort']
+            }
           }
           const run = await ctx.subagents.start(provider, {
             label: 'jisi-delegate',
@@ -77,9 +101,14 @@ export function createJisiService(ctx: Context, provider: string): JisiService {
           })
           const result = await run.result
           void settleRun(run)
+          const output = textOfBlocks(result.output)
+          // 非 completed 停因：把提供方诊断附在文本上（下游虎符/runner 据此分流限流重试）。
+          const diagnostic = result.stopReason !== 'completed' && result.diagnostic !== undefined && result.diagnostic !== ''
+            ? `\n[diagnostic] ${result.diagnostic}`
+            : ''
           return {
             status: reportStatus(result.stopReason),
-            text: textOfBlocks(result.output),
+            text: output + diagnostic,
           }
         }
         // 后台：v1 未实现服务端自等待。continuable 子代理的 settle 通知
