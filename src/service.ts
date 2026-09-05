@@ -9,7 +9,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, AgentOptions } from '@deepseek-ai/dsh-agent'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import { settleRun } from '@deepseek-ai/dsh-subagent'
-import { JisiChannel } from './channel.ts'
+import { JisiChannel, resolveProviderOfModel } from './channel.ts'
 import type {
   Collector,
   DispatchOptions,
@@ -51,14 +51,20 @@ export function createJisiService(ctx: Context, provider: string): JisiService {
       if (parent === undefined) {
         throw new Error('jisi: delegate requires a parent Agent (pass it explicitly to the service)')
       }
-      const agentOptions: AgentOptions = {
-        ...(opts.model !== undefined ? { model: opts.model } : {}),
-        ...(opts.provider !== undefined ? { provider: opts.provider } : {}),
-      }
       const prompt = [{ type: 'text', text: work.prompt }] as ContentBlock[]
       const report = (async (): Promise<Report> => {
         if (opts.background === false) {
           // 前台：一次性子代理，等结算。
+          // 路由解析：显式 LLM provider 优先；否则按 model 反查宿主 LLM provider。
+          // 注意：ctx.subagents.start 的第一参数是子代理注册表的 provider（固定默认），
+          // LLM 适配器路由只能经 agentOptions.provider 覆盖。
+          const agentOptions: AgentOptions = {}
+          if (opts.model !== undefined) agentOptions.model = opts.model
+          let llmProvider = opts.provider
+          if (llmProvider === undefined && opts.model !== undefined) {
+            llmProvider = await resolveProviderOfModel(ctx.llm, opts.model)
+          }
+          if (llmProvider !== undefined) agentOptions.provider = llmProvider
           const run = await ctx.subagents.start(provider, {
             label: 'jisi-delegate',
             prompt,

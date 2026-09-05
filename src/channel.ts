@@ -36,6 +36,26 @@ export function assertValidWork(work: WorkItem): void {
   }
 }
 
+/** 模型清单目录（宿主 LLM 适配器动态读取；测试注入 stub）。 */
+export interface ModelCatalog {
+  listProviders(): Array<{ id: string }>
+  listModels(providerId: string): Promise<Array<{ id: string; provider: string }>>
+}
+
+/**
+ * 按模型名反查宿主 provider。只有 model 没有 provider 的派单
+ * （fanout、按次模型）必须先解析路由，否则模型会被误送到默认 provider。
+ * 未找到返回 undefined（调用方保持默认路由）。
+ */
+export async function resolveProviderOfModel(catalog: ModelCatalog, modelId: string): Promise<string | undefined> {
+  for (const provider of catalog.listProviders()) {
+    for (const info of await catalog.listModels(provider.id)) {
+      if (info.id === modelId) return info.provider
+    }
+  }
+  return undefined
+}
+
 /**
  * 集思通道。
  * 依赖注入：spawner/collector/models/switcher 由宿主插件在 apply() 时绑定；

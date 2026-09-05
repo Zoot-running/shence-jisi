@@ -3,8 +3,8 @@
  * 覆盖：delegate 校验、fanout 扇出与模型透传、collect 原样交回、无综合。
  */
 import { describe, expect, it, vi } from 'vitest'
-import { InvalidWorkError, JisiChannel, assertValidWork } from '../src/channel.ts'
-import type { Collector, DispatchOptions, MainModelSwitcher, ModelInfo, Report, Spawner, WorkItem } from '../src/types.ts'
+import { InvalidWorkError, JisiChannel, assertValidWork, resolveProviderOfModel } from '../src/channel.ts'
+import type { Collector, DispatchOptions, MainModelSwitcher, ModelCatalog, ModelInfo, Report, Spawner, WorkItem } from '../src/types.ts'
 
 function makeReport(id: string, status: Report['status'] = 'completed'): Report {
   return { status, text: `answer-from-${id}` }
@@ -56,6 +56,26 @@ describe('assertValidWork', () => {
   })
   it('accepts a minimal valid work', () => {
     expect(() => assertValidWork({ prompt: 'do the thing' })).not.toThrow()
+  })
+})
+
+describe('resolveProviderOfModel', () => {
+  const catalog: ModelCatalog = {
+    listProviders: () => [{ id: 'kimi-official' }, { id: 'zhipu-official' }],
+    listModels: vi.fn(async (providerId: string) =>
+      providerId === 'kimi-official'
+        ? [{ id: 'kimi-k2.6', provider: 'kimi-official' }]
+        : [{ id: 'glm-4.5-air', provider: 'zhipu-official' }, { id: 'glm-4.6', provider: 'zhipu-official' }],
+    ),
+  }
+
+  it('resolves a model to its home provider', async () => {
+    await expect(resolveProviderOfModel(catalog, 'glm-4.5-air')).resolves.toBe('zhipu-official')
+    await expect(resolveProviderOfModel(catalog, 'kimi-k2.6')).resolves.toBe('kimi-official')
+  })
+
+  it('returns undefined for unknown models', async () => {
+    await expect(resolveProviderOfModel(catalog, 'nonexistent')).resolves.toBeUndefined()
   })
 })
 
