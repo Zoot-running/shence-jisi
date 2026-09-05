@@ -30,10 +30,10 @@ export function apply(ctx: Context): void {
         const work = { prompt: '请只回复一个单词：PONG' }
         const parts: string[] = []
         parts.push(`[provider spawn?] ${ctx.subagents.getProvider('spawn') !== undefined}`)
-        const single = ctx.jisi.delegate(agent, work, { model: 'glm-4.5-air', provider: 'zhipu-official' })
+        const single = ctx.jisi.delegate(agent, work, { model: 'glm-4.5-air', provider: 'zhipu-official', background: false })
         const singleReport = await single.report
         parts.push(`[delegate glm-4.5-air] ${singleReport.status}: ${singleReport.text.trim()}`)
-        const reports = await ctx.jisi.fanout(agent, work, ['kimi-k2.6', 'glm-4.5-air'])
+        const reports = await ctx.jisi.fanout(agent, work, ['kimi-k2.6', 'glm-4.5-air'], { background: false })
         reports.forEach((r, i) => {
           parts.push(`[fanout ${i === 0 ? 'kimi-k2.6' : 'glm-4.5-air'}] ${r.status}: ${r.text.trim()}`)
         })

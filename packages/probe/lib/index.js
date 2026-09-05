@@ -19,10 +19,10 @@ function apply(ctx) {
         const work = { prompt: "\u8BF7\u53EA\u56DE\u590D\u4E00\u4E2A\u5355\u8BCD\uFF1APONG" };
         const parts = [];
         parts.push(`[provider spawn?] ${ctx.subagents.getProvider("spawn") !== void 0}`);
-        const single = ctx.jisi.delegate(agent, work, { model: "glm-4.5-air", provider: "zhipu-official" });
+        const single = ctx.jisi.delegate(agent, work, { model: "glm-4.5-air", provider: "zhipu-official", background: false });
         const singleReport = await single.report;
         parts.push(`[delegate glm-4.5-air] ${singleReport.status}: ${singleReport.text.trim()}`);
-        const reports = await ctx.jisi.fanout(agent, work, ["kimi-k2.6", "glm-4.5-air"]);
+        const reports = await ctx.jisi.fanout(agent, work, ["kimi-k2.6", "glm-4.5-air"], { background: false });
         reports.forEach((r, i) => {
           parts.push(`[fanout ${i === 0 ? "kimi-k2.6" : "glm-4.5-air"}] ${r.status}: ${r.text.trim()}`);
         });

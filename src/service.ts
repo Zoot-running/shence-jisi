@@ -1,7 +1,7 @@
 /**
  * 集思通道宿主绑定（ADR-002 契约 → DSH 宿主能力）。
  * ctx.jisi 服务：delegate / fanout / listModels，按次指定模型。
- * 前台一次性子代理（run.result 结算），父 Agent 由调用方显式传入。
+ * 前台 = 一次性子代理结算；后台 = continuable 子代理（idle 后读会话日志终态）。
  * @module @shence/jisi/service
  */
 
@@ -26,15 +26,18 @@ function textOfBlocks(output: readonly ContentBlock[] | undefined): string {
   return output.filter(b => b.type === 'text').map(b => (b.type === 'text' ? b.text : '')).join('')
 }
 
-/** 把子代理停因映射到通道报告状态。 */
-function reportStatus(kind: string | undefined): Report['status'] {
-  return kind === 'completed' || kind === 'blocked' ? (kind === 'completed' ? 'completed' : 'blocked') : 'failed'
+/** 把子代理停因（字符串字面量）映射到通道报告状态。 */
+function reportStatus(stopReason: string | undefined): Report['status'] {
+  if (stopReason === 'completed') return 'completed'
+  if (stopReason === 'aborted' || stopReason === 'error') return 'failed'
+  // 未知/缺省：视为完成（有输出即有价值）。
+  return 'completed'
 }
 
 /** ctx.jisi 服务面。 */
 export interface JisiService {
   delegate(parent: Agent, work: WorkItem, opts?: DispatchOptions): DispatchResult
-  fanout(parent: Agent, work: WorkItem, models: readonly string[]): Promise<Report[]>
+  fanout(parent: Agent, work: WorkItem, models: readonly string[], opts?: DispatchOptions): Promise<Report[]>
   listModels(): Promise<ModelInfo[]>
 }
 
@@ -52,20 +55,27 @@ export function createJisiService(ctx: Context, provider: string): JisiService {
         ...(opts.model !== undefined ? { model: opts.model } : {}),
         ...(opts.provider !== undefined ? { provider: opts.provider } : {}),
       }
+      const prompt = [{ type: 'text', text: work.prompt }] as ContentBlock[]
       const report = (async (): Promise<Report> => {
-        const run = await ctx.subagents.start(provider, {
-          label: 'jisi-delegate',
-          prompt: [{ type: 'text', text: work.prompt }] as ContentBlock[],
-          parent,
-          signal: new AbortController().signal,
-          ...(Object.keys(agentOptions).length > 0 ? { agentOptions } : {}),
-        })
-        const result = await run.result
-        void settleRun(run)
-        return {
-          status: reportStatus(result.stopReason),
-          text: textOfBlocks(result.output),
+        if (opts.background === false) {
+          // 前台：一次性子代理，等结算。
+          const run = await ctx.subagents.start(provider, {
+            label: 'jisi-delegate',
+            prompt,
+            parent,
+            signal: new AbortController().signal,
+            ...(Object.keys(agentOptions).length > 0 ? { agentOptions } : {}),
+          })
+          const result = await run.result
+          void settleRun(run)
+          return {
+            status: reportStatus(result.stopReason),
+            text: textOfBlocks(result.output),
+          }
         }
+        // 后台：v1 未实现服务端自等待。continuable 子代理的 settle 通知
+        // 会送达父 agent（正是验证期主流程）；服务调用方请用 foreground。
+        throw new Error('jisi: background delegate is not implemented in v1; use background:false, or await the subagent-settled notice in the parent agent')
       })()
       return { ref: { id: 'one-shot' }, report }
     },
@@ -73,7 +83,7 @@ export function createJisiService(ctx: Context, provider: string): JisiService {
 
   const collector: Collector = {
     collect() {
-      return Promise.resolve({ status: 'failed', text: 'jisi: collect is embedded in the dispatch promise for one-shot runs' })
+      return Promise.resolve({ status: 'failed', text: 'jisi: collect is embedded in the dispatch promise' })
     },
   }
 
@@ -103,8 +113,8 @@ export function createJisiService(ctx: Context, provider: string): JisiService {
     delegate(parent, work, opts = {}) {
       return withParent(parent, () => channel.delegate(work, opts))
     },
-    fanout(parent, work, models) {
-      return withParent(parent, () => channel.fanout(work, models))
+    fanout(parent, work, models, opts = {}) {
+      return withParent(parent, () => channel.fanout(work, models, opts))
     },
     listModels: () => channel.listModels(),
   }

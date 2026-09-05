@@ -65,9 +65,9 @@ export class JisiChannel {
    * 全部 settle 后返回各报告（原样、不综合）。
    * model 列表空 → 返回 []。
    */
-  async fanout(work: WorkItem, models: readonly string[]): Promise<Report[]> {
+  async fanout(work: WorkItem, models: readonly string[], opts: DispatchOptions = {}): Promise<Report[]> {
     assertValidWork(work)
-    const dispatches = models.map(model => this.delegate(work, { model }))
+    const dispatches = models.map(model => this.delegate(work, { ...opts, model }))
     return Promise.all(dispatches.map(d => d.report))
   }
 

@@ -27,7 +27,8 @@
 - ✅ 宿主绑定：`src/index.ts` + `src/service.ts` — `ctx.jisi` 服务（delegate/fanout/listModels，按次指定模型）
 - ✅ 多供应商接入：`packages/llm-openai-compat`（OpenAI 兼容适配器，Kimi/智谱实测通过）
 - ✅ L1 集成验证：`packages/probe`（jisi_probe 工具）在 dev 实例实测——glm-4.5-air/kimi-k2.6 子代理 PONG 全通
-- ⏳ v1 未做：主 agent 自换模型（宿主能力缺失时按 ADR 降级）、后台 continuable 收结果（现为一次性前台结算）
+- ✅ L1 实测：delegate（glm-4.5-air→PONG）、fanout（kimi+glm 并行）、listModels（3 供应商 6 模型）全通
+- ⏳ v1.1 遗留：后台 continuable 服务端收结果（父 agent 侧 settle 通知已天然可用）、主 agent 自换模型、fanout 供应商限流重试（glm 并发偶发空结果）
 
 ## 开发循环（dev 实例）
 
