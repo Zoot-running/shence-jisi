@@ -6,9 +6,8 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import type { LlmModelInfo } from '@deepseek-ai/dsh-llm'
 import { OpenAICompatAdapter } from './adapter.ts'
-import type { RouteFacts } from './adapter.ts'
+import type { CompatModelInfo, RouteFacts } from './adapter.ts'
 
 export const name = 'llm-openai-compat'
 export const inject = ['llm']
@@ -17,7 +16,17 @@ export interface RouteConfig {
   provider: string
   baseURL: string
   apiKeyEnv: string
-  models?: Array<{ id: string; name: string; description?: string }>
+  models?: Array<{
+    id: string
+    name: string
+    description?: string
+    thinking?: {
+      param: string
+      efforts: Record<string, unknown>
+      defaultEffort?: string
+      names?: Record<string, string>
+    }
+  }>
 }
 
 export interface Config {
@@ -35,6 +44,12 @@ export const Config: z<Config> = z.object({
           id: z.string().required(),
           name: z.string().required(),
           description: z.string(),
+          thinking: z.object({
+            param: z.string(),
+            efforts: z.dict(z.any()),
+            defaultEffort: z.string(),
+            names: z.dict(z.string()),
+          }),
         }),
       ),
     }),
@@ -44,12 +59,16 @@ export const Config: z<Config> = z.object({
 export function apply(ctx: Context, config: Config): void {
   const routes = new Map<string, RouteFacts>()
   for (const route of config.routes) {
-    const models: LlmModelInfo[] = (route.models ?? []).map(m => ({
-      provider: route.provider,
-      id: m.id,
-      name: m.name,
-      ...(m.description !== undefined ? { description: m.description } : {}),
-    }))
+    const models: CompatModelInfo[] = (route.models ?? []).map(m => {
+      const thinking = m.thinking !== undefined && m.thinking.param !== '' ? m.thinking : undefined
+      return {
+        provider: route.provider,
+        id: m.id,
+        name: m.name,
+        ...(m.description !== undefined ? { description: m.description } : {}),
+        ...(thinking !== undefined ? { thinking } : {}),
+      }
+    })
     routes.set(route.provider, {
       baseURL: route.baseURL,
       apiKeyEnv: route.apiKeyEnv,

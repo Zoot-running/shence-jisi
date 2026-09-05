@@ -20,6 +20,8 @@ export interface DispatchOptions {
   model?: string
   /** 可选 provider 覆盖。 */
   provider?: string
+  /** 按次指定思考强度（adapter 自有语义，如 off/low/high/max）。 */
+  reasoningEffort?: string
   /** 后台执行（durable 子代理）；默认 true。 */
   background?: boolean
 }

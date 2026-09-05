@@ -2,7 +2,7 @@
 import z from "@deepseek-ai/schemastery";
 
 // src/adapter.ts
-import { attributionHeaders, assertUsableApiKey, LlmError as LlmError3, LlmAdapter } from "@deepseek-ai/dsh-llm";
+import { attributionHeaders, assertUsableApiKey, LlmError as LlmError3, LlmAdapter, ReasoningEffortId } from "@deepseek-ai/dsh-llm";
 
 // src/serialize.ts
 function textOf(content) {
@@ -63,7 +63,7 @@ function serializeMessages(messages) {
   }
   return out;
 }
-function buildRequest(options) {
+function buildRequest(options, thinking) {
   const request = {
     model: options.model,
     messages: serializeMessages(options.messages),
@@ -82,6 +82,11 @@ function buildRequest(options) {
   if (options.temperature !== void 0) request.temperature = options.temperature;
   if (options.maxTokens !== void 0) request.max_tokens = options.maxTokens;
   if (options.stop !== void 0 && options.stop.length > 0) request.stop = options.stop;
+  if (thinking !== void 0 && options.reasoningEffort !== void 0) {
+    const effort = String(options.reasoningEffort);
+    const value = thinking.efforts[effort] ?? thinking.efforts[thinking.defaultEffort ?? ""];
+    if (value !== void 0) request[thinking.param] = value;
+  }
   return request;
 }
 
@@ -250,10 +255,25 @@ var OpenAICompatAdapter = class extends LlmAdapter {
     return { id: provider, name: provider };
   }
   async listModels(provider) {
-    return this.routes.get(provider)?.models ?? [];
+    const models = this.routes.get(provider)?.models ?? [];
+    return models.map(({ thinking: _thinking, ...model }) => model);
   }
   async resolveModel(provider, model) {
-    return { provider, id: model, name: model };
+    const compat = this.routes.get(provider)?.models.find((m) => m.id === model);
+    const effortIds = Object.keys(compat?.thinking?.efforts ?? {});
+    const reasoning = compat?.thinking !== void 0 && effortIds.length > 0 ? {
+      efforts: effortIds.map((id) => ({
+        id: ReasoningEffortId(id),
+        name: compat.thinking.names?.[id] ?? id
+      })),
+      ...compat.thinking.defaultEffort !== void 0 ? { defaultEffort: ReasoningEffortId(compat.thinking.defaultEffort) } : {}
+    } : void 0;
+    return {
+      provider,
+      id: model,
+      name: compat?.name ?? model,
+      ...reasoning !== void 0 ? { reasoning } : {}
+    };
   }
   async *stream(options) {
     const facts = this.routes.get(options.provider);
@@ -261,7 +281,8 @@ var OpenAICompatAdapter = class extends LlmAdapter {
       throw new LlmError3(`unregistered provider route "${options.provider}"`, "UNKNOWN_PROVIDER");
     }
     const connection = resolveConnection(facts);
-    const request = buildRequest(options);
+    const thinking = facts.models.find((m) => m.id === options.model)?.thinking;
+    const request = buildRequest(options, thinking);
     let response;
     try {
       response = await fetch(`${connection.baseURL}/chat/completions`, {
@@ -317,7 +338,13 @@ var Config = z.object({
         z.object({
           id: z.string().required(),
           name: z.string().required(),
-          description: z.string()
+          description: z.string(),
+          thinking: z.object({
+            param: z.string(),
+            efforts: z.dict(z.any()),
+            defaultEffort: z.string(),
+            names: z.dict(z.string())
+          })
         })
       )
     })
@@ -326,12 +353,16 @@ var Config = z.object({
 function apply(ctx, config) {
   const routes = /* @__PURE__ */ new Map();
   for (const route of config.routes) {
-    const models = (route.models ?? []).map((m) => ({
-      provider: route.provider,
-      id: m.id,
-      name: m.name,
-      ...m.description !== void 0 ? { description: m.description } : {}
-    }));
+    const models = (route.models ?? []).map((m) => {
+      const thinking = m.thinking !== void 0 && m.thinking.param !== "" ? m.thinking : void 0;
+      return {
+        provider: route.provider,
+        id: m.id,
+        name: m.name,
+        ...m.description !== void 0 ? { description: m.description } : {},
+        ...thinking !== void 0 ? { thinking } : {}
+      };
+    });
     routes.set(route.provider, {
       baseURL: route.baseURL,
       apiKeyEnv: route.apiKeyEnv,

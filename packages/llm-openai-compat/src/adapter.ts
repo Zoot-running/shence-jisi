@@ -4,11 +4,13 @@
  * @module @shence/llm-openai-compat/adapter
  */
 
-import { attributionHeaders, assertUsableApiKey, LlmError, LlmAdapter } from '@deepseek-ai/dsh-llm'
+import { attributionHeaders, assertUsableApiKey, LlmError, LlmAdapter, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type {
   GenerateOptions,
   LlmModelInfo,
+  LlmModelReasoningInfo,
   LlmProviderInfo,
+  LlmResolvedModelInfo,
   StreamChunk,
 } from '@deepseek-ai/dsh-llm'
 import { buildRequest } from './serialize.ts'
@@ -16,11 +18,27 @@ import { parseSse } from './sse.ts'
 import { translate } from './translate.ts'
 import type { WireError, WireRequest } from './types.ts'
 
+/** 单模型思考能力：effort id → wire 值（原样 JSON 注入到请求）。 */
+export interface ModelThinking {
+  /** wire 参数名（如 thinking）。 */
+  readonly param: string
+  /** effort id → wire 值；调用方 reasoningEffort 在此查找。 */
+  readonly efforts: Readonly<Record<string, unknown>>
+  /** 调用方未指定 effort 时应用的默认 id。 */
+  readonly defaultEffort?: string
+  /** effort id → 展示名（选型/诊断用）。 */
+  readonly names?: Readonly<Record<string, string>>
+}
+
+export interface CompatModelInfo extends LlmModelInfo {
+  thinking?: ModelThinking
+}
+
 /** 单路由静态事实（注册时确定）；apiKey 每请求解析。 */
 export interface RouteFacts {
   readonly baseURL: string
   readonly apiKeyEnv: string
-  readonly models: readonly LlmModelInfo[]
+  readonly models: readonly CompatModelInfo[]
 }
 
 /** 运行时解析的连接事实。 */
@@ -50,11 +68,30 @@ export class OpenAICompatAdapter extends LlmAdapter {
   }
 
   async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
-    return this.routes.get(provider)?.models ?? []
+    const models = this.routes.get(provider)?.models ?? []
+    return models.map(({ thinking: _thinking, ...model }) => model)
   }
 
-  async resolveModel(provider: string, model: string): Promise<LlmModelInfo & { provider: string }> {
-    return { provider, id: model, name: model }
+  async resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
+    const compat = this.routes.get(provider)?.models.find(m => m.id === model)
+    const effortIds = Object.keys(compat?.thinking?.efforts ?? {})
+    const reasoning: LlmModelReasoningInfo | undefined = compat?.thinking !== undefined && effortIds.length > 0
+      ? {
+          efforts: effortIds.map(id => ({
+            id: ReasoningEffortId(id),
+            name: compat.thinking!.names?.[id] ?? id,
+          })),
+          ...(compat.thinking.defaultEffort !== undefined
+            ? { defaultEffort: ReasoningEffortId(compat.thinking.defaultEffort) }
+            : {}),
+        }
+      : undefined
+    return {
+      provider,
+      id: model,
+      name: compat?.name ?? model,
+      ...(reasoning !== undefined ? { reasoning } : {}),
+    }
   }
 
   async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
@@ -63,7 +100,8 @@ export class OpenAICompatAdapter extends LlmAdapter {
       throw new LlmError(`unregistered provider route "${options.provider}"`, 'UNKNOWN_PROVIDER')
     }
     const connection = resolveConnection(facts)
-    const request: WireRequest = buildRequest(options)
+    const thinking = facts.models.find(m => m.id === options.model)?.thinking
+    const request: WireRequest = buildRequest(options, thinking)
 
     let response: Response
     try {

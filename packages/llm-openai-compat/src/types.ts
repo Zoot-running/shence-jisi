@@ -12,6 +12,8 @@ export interface WireRequest {
   temperature?: number
   max_tokens?: number
   stop?: string[]
+  /** 提供方私有思考参数（thinking 等，由路由配置按 effort 映射注入）。 */
+  [extra: string]: unknown
 }
 
 /** System-role message: a single string of instructions. */

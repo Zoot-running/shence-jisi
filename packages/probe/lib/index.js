@@ -26,6 +26,9 @@ function apply(ctx) {
         reports.forEach((r, i) => {
           parts.push(`[fanout ${i === 0 ? "kimi-k2.6" : "glm-4.5-air"}] ${r.status}: ${r.text.trim()}`);
         });
+        const effort = ctx.jisi.delegate(agent, work, { model: "glm-4.6", reasoningEffort: "max", background: false });
+        const effortReport = await effort.report;
+        parts.push(`[delegate glm-4.6 effort=max] ${effortReport.status}: ${effortReport.text.trim()}`);
         parts.push(`[listModels] ${JSON.stringify(await ctx.jisi.listModels())}`);
         return parts.join("\n");
       } catch (error) {

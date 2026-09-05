@@ -5,6 +5,7 @@
  */
 
 import type { ContentBlock, GenerateOptions, Message } from '@deepseek-ai/dsh-llm'
+import type { ModelThinking } from './adapter.ts'
 import type {
   WireMessage,
   WireRequest,
@@ -78,8 +79,8 @@ export function serializeMessages(messages: Message[]): WireMessage[] {
   return out
 }
 
-/** 组装完整 wire 请求。 */
-export function buildRequest(options: GenerateOptions): WireRequest {
+/** 组装完整 wire 请求；thinking 配置把 reasoningEffort 映射为提供方私有参数。 */
+export function buildRequest(options: GenerateOptions, thinking?: ModelThinking): WireRequest {
   const request: WireRequest = {
     model: options.model,
     messages: serializeMessages(options.messages),
@@ -98,5 +99,10 @@ export function buildRequest(options: GenerateOptions): WireRequest {
   if (options.temperature !== undefined) request.temperature = options.temperature
   if (options.maxTokens !== undefined) request.max_tokens = options.maxTokens
   if (options.stop !== undefined && options.stop.length > 0) request.stop = options.stop
+  if (thinking !== undefined && options.reasoningEffort !== undefined) {
+    const effort = String(options.reasoningEffort)
+    const value = thinking.efforts[effort] ?? thinking.efforts[thinking.defaultEffort ?? '']
+    if (value !== undefined) request[thinking.param] = value
+  }
   return request
 }

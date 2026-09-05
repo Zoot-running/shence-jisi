@@ -88,6 +88,11 @@ describe('JisiChannel.delegate', () => {
     expect(calls[0]!.work).toEqual(work)
     expect(calls[0]!.opts.model).toBe('gpt-x')
   })
+  it('passes reasoningEffort through to spawner', () => {
+    const { ch, calls } = channel()
+    ch.delegate({ prompt: 'solve A' }, { model: 'm1', reasoningEffort: 'max' })
+    expect(calls[0]!.opts.reasoningEffort).toBe('max')
+  })
   it('rejects invalid work before spawning', () => {
     const { ch, calls } = channel()
     expect(() => ch.delegate({ prompt: '' })).toThrow(InvalidWorkError)

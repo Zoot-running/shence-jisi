@@ -65,6 +65,9 @@ export function createJisiService(ctx: Context, provider: string): JisiService {
             llmProvider = await resolveProviderOfModel(ctx.llm, opts.model)
           }
           if (llmProvider !== undefined) agentOptions.provider = llmProvider
+          if (opts.reasoningEffort !== undefined) {
+            agentOptions.reasoningEffort = opts.reasoningEffort as AgentOptions['reasoningEffort']
+          }
           const run = await ctx.subagents.start(provider, {
             label: 'jisi-delegate',
             prompt,
