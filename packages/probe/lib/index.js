@@ -35,6 +35,15 @@ function apply(ctx) {
         const kimiHigh = ctx.jisi.delegate(agent, work, { model: "kimi-k2.6", reasoningEffort: "high", background: false });
         const kimiHighReport = await kimiHigh.report;
         parts.push(`[delegate kimi-k2.6 effort=high] ${kimiHighReport.status}: ${kimiHighReport.text.trim()}`);
+        const k3 = ctx.jisi.delegate(agent, work, { model: "kimi-k3", background: false });
+        const k3Report = await k3.report;
+        parts.push(`[delegate kimi-k3] ${k3Report.status}: ${k3Report.text.trim()}`);
+        const glm53 = ctx.jisi.delegate(agent, work, { model: "glm-5.3", reasoningEffort: "max", background: false });
+        const glm53Report = await glm53.report;
+        parts.push(`[delegate glm-5.3 effort=max] ${glm53Report.status}: ${glm53Report.text.trim()}`);
+        const dsFlash = ctx.jisi.delegate(agent, work, { model: "deepseek-v4-flash", reasoningEffort: "low", background: false });
+        const dsFlashReport = await dsFlash.report;
+        parts.push(`[delegate deepseek-v4-flash effort=low] ${dsFlashReport.status}: ${dsFlashReport.text.trim()}`);
         parts.push(`[listModels] ${JSON.stringify(await ctx.jisi.listModels())}`);
         return parts.join("\n");
       } catch (error) {
