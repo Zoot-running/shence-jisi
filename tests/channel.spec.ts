@@ -112,8 +112,8 @@ describe('JisiChannel.collect / switchMainModel / listModels', () => {
     await ch.switchMainModel('m-x')
     expect(switcher).toHaveBeenCalledWith('m-x')
   })
-  it('listModels reads from injected provider config', () => {
+  it('listModels reads from injected provider config', async () => {
     const { ch } = channel()
-    expect(ch.listModels()).toEqual([{ id: 'm1', provider: 'p' }])
+    expect(await ch.listModels()).toEqual([{ id: 'm1', provider: 'p' }])
   })
 })

@@ -1,0 +1,4 @@
+# @shence/jisi-probe 插件入口
+- insert:
+    - id: shence-jisi-probe
+      name: '@shence/jisi-probe'

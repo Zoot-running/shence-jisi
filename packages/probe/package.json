@@ -1,0 +1,23 @@
+{
+  "name": "@shence/jisi-probe",
+  "version": "0.1.0",
+  "description": "集思 L1 集成探针（仅测试用）：注册 jisi_probe 工具，供模型调用以验证通道全链路",
+  "type": "module",
+  "main": "lib/index.js",
+  "files": [
+    "lib",
+    "src",
+    "cordis.patch.yml"
+  ],
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --format=esm --platform=node --packages=external --outfile=lib/index.js"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  }
+}

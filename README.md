@@ -20,3 +20,19 @@
 
 - 被依赖（软）：[shence-hufu](https://github.com/Zoot-running/shence-hufu)（无本插件时回退 DSH 原生调度）
 - 文档：[shence-docs](https://github.com/Zoot-running/shence-docs)
+
+## 实现状态
+
+- ✅ 通道契约（ADR-002）：`src/channel.ts` 纯逻辑 + 13 项 L0 测试
+- ✅ 宿主绑定：`src/index.ts` + `src/service.ts` — `ctx.jisi` 服务（delegate/fanout/listModels，按次指定模型）
+- ✅ 多供应商接入：`packages/llm-openai-compat`（OpenAI 兼容适配器，Kimi/智谱实测通过）
+- ✅ L1 集成验证：`packages/probe`（jisi_probe 工具）在 dev 实例实测——glm-4.5-air/kimi-k2.6 子代理 PONG 全通
+- ⏳ v1 未做：主 agent 自换模型（宿主能力缺失时按 ADR 降级）、后台 continuable 收结果（现为一次性前台结算）
+
+## 开发循环（dev 实例）
+
+```
+pnpm build && pnpm test            # 仓库内
+dsh plugin --profile headless rm/add file:<repo>   # 装进 dev profile（file: 拷贝，改动需重装）
+KIMI_API_KEY=... ZHIPU_API_KEY=... dsh --profile headless "调用 jisi_probe ..."
+```

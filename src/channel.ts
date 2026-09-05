@@ -45,7 +45,7 @@ export class JisiChannel {
   constructor(
     private readonly spawner: Spawner,
     private readonly collector: Collector,
-    private readonly models: () => ModelInfo[],
+    private readonly models: () => ModelInfo[] | Promise<ModelInfo[]>,
     private readonly switcher?: MainModelSwitcher,
   ) {}
 
@@ -72,8 +72,8 @@ export class JisiChannel {
   }
 
   /** 模型清单（宿主 provider 配置动态读取）。 */
-  listModels(): ModelInfo[] {
-    return this.models()
+  async listModels(): Promise<ModelInfo[]> {
+    return await this.models()
   }
 
   /** 主 agent 自换模型（需宿主门禁在 apply() 侧实现）。 */
