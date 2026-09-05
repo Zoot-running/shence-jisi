@@ -1,0 +1,33 @@
+{
+  "name": "@shence/llm-openai-compat",
+  "version": "0.1.0",
+  "description": "集思附属：OpenAI 兼容 provider 适配器（多路由），供 Kimi/智谱等国内模型接入 DSH",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "src/index.ts",
+  "files": [
+    "lib",
+    "src",
+    "cordis.patch.yml"
+  ],
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --format=esm --platform=node --packages=external --outfile=lib/index.js"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dependencies": {
+    "eventsource-parser": "^3.0.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-brand": "*",
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/schemastery": "*"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  }
+}

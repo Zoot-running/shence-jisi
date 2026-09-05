@@ -1,0 +1,4 @@
+# @shence/llm-openai-compat 插件入口（bundle 补丁：insert 新条目）
+- insert:
+    - id: llm-openai-compat
+      name: '@shence/llm-openai-compat'
