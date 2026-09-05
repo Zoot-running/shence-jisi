@@ -48,16 +48,22 @@ export function apply(ctx: Context): void {
         const kimiHigh = ctx.jisi.delegate(agent, work, { model: 'kimi-k2.6', reasoningEffort: 'high', background: false })
         const kimiHighReport = await kimiHigh.report
         parts.push(`[delegate kimi-k2.6 effort=high] ${kimiHighReport.status}: ${kimiHighReport.text.trim()}`)
-        // 新一代模型路由：kimi-k3 / glm-5.3+max / deepseek-v4-flash（模型名反查 provider）。
+        // 新一代模型路由：kimi-k3 / deepseek-v4-flash（模型名反查 provider）。
         const k3 = ctx.jisi.delegate(agent, work, { model: 'kimi-k3', background: false })
         const k3Report = await k3.report
         parts.push(`[delegate kimi-k3] ${k3Report.status}: ${k3Report.text.trim()}`)
-        const glm53 = ctx.jisi.delegate(agent, work, { model: 'glm-5.3', reasoningEffort: 'max', background: false })
-        const glm53Report = await glm53.report
-        parts.push(`[delegate glm-5.3 effort=max] ${glm53Report.status}: ${glm53Report.text.trim()}`)
         const dsFlash = ctx.jisi.delegate(agent, work, { model: 'deepseek-v4-flash', reasoningEffort: 'low', background: false })
         const dsFlashReport = await dsFlash.report
         parts.push(`[delegate deepseek-v4-flash effort=low] ${dsFlashReport.status}: ${dsFlashReport.text.trim()}`)
+        // 并发对照：3× deepseek-v4-pro+max 同时派（hard 题主力模型并发验证）。
+        const concurrent = await ctx.jisi.fanout(agent, work, ['deepseek-v4-pro', 'deepseek-v4-pro', 'deepseek-v4-pro'], { reasoningEffort: 'max', background: false })
+        concurrent.forEach((r, i) => {
+          parts.push(`[concurrent deepseek-v4-pro #${i + 1}] ${r.status}: ${r.text.trim()}`)
+        })
+        // 智谱余额哨兵（余额不足时 failed，提示充值）。
+        const glm53 = ctx.jisi.delegate(agent, work, { model: 'glm-5.3', reasoningEffort: 'max', background: false })
+        const glm53Report = await glm53.report
+        parts.push(`[delegate glm-5.3 effort=max] ${glm53Report.status}: ${glm53Report.text.trim()}`)
         parts.push(`[listModels] ${JSON.stringify(await ctx.jisi.listModels())}`)
         return parts.join('\n')
       } catch (error) {
