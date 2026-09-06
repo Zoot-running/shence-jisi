@@ -19,7 +19,7 @@
 ## 关联
 
 - 被依赖（软）：[shence-hufu](https://github.com/Zoot-running/shence-hufu)（无本插件时回退 DSH 原生调度）
-- 文档：[shence-docs](https://github.com/Zoot-running/shence-docs)
+- 文档：[shence-junji](https://github.com/Zoot-running/shence-junji)
 
 ## 实现状态
 
