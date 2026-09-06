@@ -61,7 +61,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   ctx.tools.register(defineTool({
     name: 'jisi_fanout',
     description:
-      'Fan a prompt out to multiple models in parallel and return their raw reports, unsynthesized. Call whenever you need diverse approaches; you decide how many models and how many ideas to ask for (say it in the prompt). The models are released once they answer.',
+      'Fan a prompt out to multiple models in parallel and return their raw reports, unsynthesized. ANY agent may call this at any time — especially when stuck on a hard problem and wanting diverse approaches or fresh ideas. The models are released once they answer; you decide when to call, how many models, and how many ideas to ask for (nothing is forced).',
     parameters: {
       prompt: { type: 'string', required: true, description: 'The self-contained work/idea prompt sent to every model.' },
       models: { type: 'array', description: 'Model ids to fan out to. Default: the registered model list.' },
