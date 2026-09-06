@@ -3,6 +3,7 @@ import z from "@deepseek-ai/schemastery";
 
 // src/adapter.ts
 import { attributionHeaders, assertUsableApiKey, LlmError as LlmError3, LlmAdapter, ReasoningEffortId } from "@deepseek-ai/dsh-llm";
+import { appendFileSync, mkdirSync } from "node:fs";
 
 // src/serialize.ts
 function textOf(content) {
@@ -319,8 +320,28 @@ var OpenAICompatAdapter = class extends LlmAdapter {
       yield { type: "finish", reason: { kind: "error", error: { message: "empty response body", code: "EMPTY_RESPONSE" } } };
       return;
     }
+    let usage;
     for await (const chunk of translate(parseSse(response.body))) {
+      if (chunk.type === "usage") usage = chunk.usage;
       yield chunk;
+    }
+    if (usage !== void 0) {
+      try {
+        const home = process.env.DSH_HOME ?? ".";
+        const dir = `${home}/storages`;
+        mkdirSync(dir, { recursive: true });
+        appendFileSync(`${dir}/llm-usage.jsonl`, `${JSON.stringify({
+          at: Date.now(),
+          provider: options.provider,
+          model: options.model,
+          inputTokens: usage.inputTokens ?? 0,
+          outputTokens: usage.outputTokens ?? 0,
+          reasoningTokens: usage.reasoningTokens ?? 0,
+          cacheReadTokens: usage.cacheReadTokens ?? 0
+        })}
+`);
+      } catch {
+      }
     }
   }
 };

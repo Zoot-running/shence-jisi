@@ -12,7 +12,9 @@ import type {
   LlmProviderInfo,
   LlmResolvedModelInfo,
   StreamChunk,
+  TokenUsage,
 } from '@deepseek-ai/dsh-llm'
+import { appendFileSync, mkdirSync } from 'node:fs'
 import { buildRequest } from './serialize.ts'
 import { parseSse } from './sse.ts'
 import { translate } from './translate.ts'
@@ -143,8 +145,27 @@ export class OpenAICompatAdapter extends LlmAdapter {
       return
     }
 
+    let usage: TokenUsage | undefined
     for await (const chunk of translate(parseSse(response.body))) {
+      if (chunk.type === 'usage') usage = chunk.usage
       yield chunk
+    }
+    // 花费计量：每次调用把 token 用量记进本地 sidecar（集思 jisi_usage 工具聚合计价）。
+    if (usage !== undefined) {
+      try {
+        const home = process.env.DSH_HOME ?? '.'
+        const dir = `${home}/storages`
+        mkdirSync(dir, { recursive: true })
+        appendFileSync(`${dir}/llm-usage.jsonl`, `${JSON.stringify({
+          at: Date.now(),
+          provider: options.provider,
+          model: options.model,
+          inputTokens: usage.inputTokens ?? 0,
+          outputTokens: usage.outputTokens ?? 0,
+          reasoningTokens: usage.reasoningTokens ?? 0,
+          cacheReadTokens: usage.cacheReadTokens ?? 0,
+        })}\n`)
+      } catch { /* 计量失败不影响主流程 */ }
     }
   }
 }
