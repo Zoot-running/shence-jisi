@@ -10,6 +10,7 @@ import type { Agent, AgentOptions } from '@deepseek-ai/dsh-agent'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import { settleRun } from '@deepseek-ai/dsh-subagent'
 import { JisiChannel, resolveProviderOfModel } from './channel.ts'
+import type { ModelLedger } from './model-ledger.ts'
 import type {
   Collector,
   DispatchOptions,
@@ -58,10 +59,21 @@ export interface JisiService {
   delegate(parent: Agent, work: WorkItem, opts?: DispatchOptions): DispatchResult
   fanout(parent: Agent, work: WorkItem, models: readonly string[], opts?: DispatchOptions): Promise<Report[]>
   listModels(): Promise<ModelInfo[]>
+  /** 模型能力账本（越用越了解模型；记录/排序/摘要）。 */
+  ledger: {
+    record(model: string, dimension: 'execution' | 'idea', key: string, win: boolean): void
+    rank(dimension: 'execution' | 'idea', key: string, candidates: readonly string[], priceOrder?: readonly string[]): string[]
+    summary(): Array<{ model: string; dimension: string; key: string; attempts: number; wins: number; rate: number }>
+  }
 }
 
 /** 绑定宿主能力，构造 ctx.jisi 服务。 */
-export function createJisiService(ctx: Context, provider: string): JisiService {
+export function createJisiService(
+  ctx: Context,
+  provider: string,
+  modelLedger: ModelLedger,
+  onLedgerChange: () => void,
+): JisiService {
   let currentParent: Agent | undefined
 
   const spawner: Spawner = {
@@ -155,5 +167,13 @@ export function createJisiService(ctx: Context, provider: string): JisiService {
       return withParent(parent, () => channel.fanout(work, models, opts))
     },
     listModels: () => channel.listModels(),
+    ledger: {
+      record(model, dimension, key, win) {
+        modelLedger.record(model, dimension, key, win)
+        onLedgerChange()
+      },
+      rank: (dimension, key, candidates, priceOrder) => modelLedger.rank(dimension, key, candidates, priceOrder),
+      summary: () => modelLedger.summary(),
+    },
   }
 }
