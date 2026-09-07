@@ -16,6 +16,20 @@ import { createJisiService } from './service.ts'
 export const name = 'shence-jisi'
 export const inject = ['subagents', 'llm', 'tools']
 
+/**
+ * DeepSeek 高峰时段判定（北京时间周一至周五 9:00-12:00、14:00-18:00）。
+ * 其余时段（夜间/周末）为半价空闲时段。无时间戳时按当前时间判。
+ * @param at - 调用时间戳 ms（sidecar 的 `at` 字段），缺省用当前时间。
+ */
+export function isBeijingPeak(at?: number): boolean {
+  const d = new Date(at ?? Date.now())
+  const beijing = new Date(d.getTime() + 8 * 3600_000)
+  const day = beijing.getUTCDay() // 0=周日 … 6=周六
+  if (day === 0 || day === 6) return false
+  const minutes = beijing.getUTCHours() * 60 + beijing.getUTCMinutes()
+  return (minutes >= 9 * 60 && minutes < 12 * 60) || (minutes >= 14 * 60 && minutes < 18 * 60)
+}
+
 export interface Config {
   /** ctx.subagents 的 provider 名（默认 spawn）。 */
   provider?: string
@@ -23,24 +37,31 @@ export interface Config {
   ledgerPath?: string
   /** 模型价格序（便宜→贵，同分经济性 tiebreak）。 */
   priceOrder?: string[]
-  /** 单价表（每 1M token 的 CNY；input/output/reasoning 缺省按 output 计）。估算值，登录平台账单后校准。 */
-  priceTable?: Record<string, { input: number; output: number; reasoning?: number }>
+  /** 单价表（每 1M token 的 CNY）。input=输入缓存未命中价；cacheRead=缓存命中价（缺省按 input）；output=输出价；
+   * reasoning 缺省按 output 计；idle=空闲时段价（DeepSeek 夜间/周末半价，缺省同 input/output/cacheRead）。 */
+  priceTable?: Record<string, { input: number; output: number; reasoning?: number; cacheRead?: number; idle?: { input: number; output: number; cacheRead?: number } }>
 }
 
 export function apply(ctx: Context, config: Config = {}): void {
   const provider = config.provider ?? 'spawn'
   const ledgerPath = config.ledgerPath ?? join(process.env.DSH_HOME ?? '.', 'storages', 'jisi-model-ledger.json')
-  const priceOrder = config.priceOrder ?? ['deepseek-v4-flash', 'glm-5.3-flash', 'kimi-k3', 'glm-5.3', 'deepseek-v4-pro']
+  const priceOrder = config.priceOrder ?? ['glm-4.5-air', 'glm-5.3-flash', 'glm-4.6', 'deepseek-v4-flash', 'kimi-k2.6', 'kimi-k2.7-code', 'deepseek-v4-pro', 'glm-5.3', 'kimi-k2.7-code-highspeed', 'kimi-k3']
   const priceTable = config.priceTable ?? {
-    // 估算单价（CNY / 1M token）——登录平台账单后校准。
-    'deepseek-v4-flash': { input: 2, output: 6 },
-    'deepseek-v4-pro': { input: 4, output: 16 },
-    'kimi-k3': { input: 8, output: 32 },  // 观察到的实际消耗偏高：估算上修，待平台账单校准
-    'kimi-k2.6': { input: 1, output: 3 },
-    'glm-5.3': { input: 1, output: 4 },
-    'glm-5.3-flash': { input: 0.5, output: 2 },
-    'glm-4.6': { input: 1, output: 4 },
-    'glm-4.5-air': { input: 0.5, output: 1 },
+    // 单价（CNY / 1M token）。2026-09-08 按官方定价页校准：
+    //  - Kimi：platform.kimi.com/docs/pricing/{chat-k3,chat-k27-code,chat-k26}
+    //  - DeepSeek：api-docs.deepseek.com/zh-cn/quick_start/pricing/（峰/谷双价，谷=半价；高峰=周一至五 9-12/14-18）
+    //  - GLM：仍为估算（待智谱平台价格页核对，见 shence-junji VALIDATION/L2-MODEL-CATALOG-2026-09.md）
+    'deepseek-v4-flash': { input: 3, output: 9, cacheRead: 0.1, idle: { input: 1.5, output: 4.5, cacheRead: 0.05 } },
+    'deepseek-v4-pro': { input: 9, output: 27, cacheRead: 0.3, idle: { input: 4.5, output: 13.5, cacheRead: 0.15 } },
+    'deepseek-v4-flash-vision-exp': { input: 3, output: 9, cacheRead: 0.1, idle: { input: 1.5, output: 4.5, cacheRead: 0.05 } },
+    'kimi-k3': { input: 20, output: 100, cacheRead: 2 },
+    'kimi-k2.6': { input: 6.5, output: 27, cacheRead: 1.1 },
+    'kimi-k2.7-code': { input: 6.5, output: 27, cacheRead: 1.3 },
+    'kimi-k2.7-code-highspeed': { input: 13, output: 54, cacheRead: 2.6 },
+    'glm-5.3': { input: 10, output: 31 },        // ESTIMATE（$1.4/$4.4 国际价≈¥10/¥31），待智谱校准
+    'glm-5.3-flash': { input: 1, output: 2 },    // ESTIMATE，待智谱校准
+    'glm-4.6': { input: 1, output: 4 },          // ESTIMATE，待智谱校准
+    'glm-4.5-air': { input: 0.5, output: 1 },    // ESTIMATE，待智谱校准
   }
 
   // 能力账本：本地落盘，跨 run 积累。
@@ -107,25 +128,37 @@ export function apply(ctx: Context, config: Config = {}): void {
   ctx.tools.register(defineTool({
     name: 'jisi_usage',
     description:
-      'Aggregate per-model token usage and ESTIMATED cost (CNY) from the local usage sidecar (llm-openai-compat writes every call). Prices are estimates until calibrated against the provider billing dashboards. Use it every round to keep spend in check and downgrade expensive models.',
+      'Aggregate per-model token usage and cost (CNY) from the local usage sidecar (llm-openai-compat writes every call). Kimi/DeepSeek prices are calibrated from official pricing pages (2026-09-08); DeepSeek costs respect peak vs off-peak hours (nights/weekends are half price); cache-hit tokens are priced at the cache-hit rate. GLM entries are still estimates. Use it every round to keep spend in check.',
     parameters: {},
     output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
     isConcurrencySafe: () => true,
     async execute() {
       const sidecar = join(process.env.DSH_HOME ?? '.', 'storages', 'llm-usage.jsonl')
-      const totals = new Map<string, { calls: number; input: number; output: number; reasoning: number; cacheRead: number }>()
+      const totals = new Map<string, { calls: number; input: number; output: number; reasoning: number; cacheRead: number; cost: number }>()
       try {
         if (existsSync(sidecar)) {
           for (const line of readFileSync(sidecar, 'utf8').split('\n')) {
             if (line.trim() === '') continue
-            const record = JSON.parse(line) as { provider?: string; model?: string; inputTokens?: number; outputTokens?: number; reasoningTokens?: number; cacheReadTokens?: number }
+            const record = JSON.parse(line) as { provider?: string; model?: string; inputTokens?: number; outputTokens?: number; reasoningTokens?: number; cacheReadTokens?: number; at?: number }
             const key = `${record.provider ?? '?'}/${record.model ?? '?'}`
-            const t = totals.get(key) ?? { calls: 0, input: 0, output: 0, reasoning: 0, cacheRead: 0 }
+            const t = totals.get(key) ?? { calls: 0, input: 0, output: 0, reasoning: 0, cacheRead: 0, cost: 0 }
             t.calls += 1
-            t.input += record.inputTokens ?? 0
-            t.output += record.outputTokens ?? 0
-            t.reasoning += record.reasoningTokens ?? 0
-            t.cacheRead += record.cacheReadTokens ?? 0
+            const model = record.model ?? '?'
+            const ri = record.inputTokens ?? 0
+            const ro = record.outputTokens ?? 0
+            const rr = record.reasoningTokens ?? 0
+            const rc = record.cacheReadTokens ?? 0
+            t.input += ri
+            t.output += ro
+            t.reasoning += rr
+            t.cacheRead += rc
+            const price = priceTable[model]
+            if (price !== undefined) {
+              // 峰/谷计价：DeepSeek 高峰=北京时间周一至五 9:00-12:00、14:00-18:00，其余半价。
+              const p = isBeijingPeak(record.at) ? price : (price.idle ?? price)
+              const hit = p.cacheRead ?? p.input
+              t.cost += (ri * p.input + rc * hit + ro * p.output + rr * (p.reasoning ?? p.output)) / 1_000_000
+            }
             totals.set(key, t)
           }
         }
@@ -135,12 +168,10 @@ export function apply(ctx: Context, config: Config = {}): void {
       let grand = 0
       for (const [key, t] of [...totals.entries()].sort((a, b) => b[1].input + b[1].output - a[1].input - a[1].output)) {
         const model = key.split('/')[1] ?? '?'
-        const price = priceTable[model] ?? { input: 0, output: 0 }
-        const cost = ((t.input * price.input + t.output * price.output + t.reasoning * (price.reasoning ?? price.output)) / 1_000_000)
-        grand += cost
-        rows.push(`${key}: ${t.calls} calls, in=${t.input} out=${t.output} reasoning=${t.reasoning} cacheRead=${t.cacheRead} → ~¥${cost.toFixed(2)}${priceTable[model] === undefined ? ' (no price, uncounted)' : ''}`)
+        grand += t.cost
+        rows.push(`${key}: ${t.calls} calls, in=${t.input} out=${t.output} reasoning=${t.reasoning} cacheRead=${t.cacheRead} → ~¥${t.cost.toFixed(2)}${priceTable[model] === undefined ? ' (no price, uncounted)' : ''}`)
       }
-      rows.push(`TOTAL estimated: ~¥${grand.toFixed(2)} (price table is an ESTIMATE — calibrate after platform login)`)
+      rows.push(`TOTAL estimated: ~¥${grand.toFixed(2)} (Kimi/DeepSeek calibrated 2026-09-08; GLM entries are estimates)`)
       return rows.join('\n')
     },
   }))
