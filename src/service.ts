@@ -46,6 +46,23 @@ async function effortSupported(
   }
 }
 
+/**
+ * provider 目录里是否确实宣告了该模型。
+ * 正向验证：防目录状态不一致时模型被误送到错误 provider（F8：glm 被送到 deepseek-official）。
+ */
+async function modelListedOnProvider(
+  catalog: { listModels(provider: string): Promise<ReadonlyArray<{ id: string }>> },
+  provider: string,
+  model: string,
+): Promise<boolean> {
+  try {
+    for (const info of await catalog.listModels(provider)) {
+      if (info.id === model) return true
+    }
+  } catch { /* 目录查询失败按未宣告处理 */ }
+  return false
+}
+
 /** 把子代理停因（字符串字面量）映射到通道报告状态。 */
 function reportStatus(stopReason: string | undefined): Report['status'] {
   if (stopReason === 'completed') return 'completed'
@@ -95,6 +112,17 @@ export function createJisiService(
         let llmProvider = opts.provider
         if (llmProvider === undefined && opts.model !== undefined) {
           llmProvider = await resolveProviderOfModel(ctx.llm, opts.model)
+          // F8：解析不到 provider 时禁止静默回落父路由（模型会被误送到默认 provider，
+          // 子代理拿到"provider 不支持该模型"错误后无声死亡，落账 detail 为空）。
+          if (llmProvider === undefined) {
+            return { status: 'failed', text: `[no-provider-for-model] 模型 ${opts.model} 未出现在任何已注册 provider 的目录中；拒绝派单（不静默回落默认路由）` }
+          }
+        }
+        // 正向验证：目标 provider 确实宣告该模型（目录不一致时同样响亮失败而非误送）。
+        if (llmProvider !== undefined && opts.model !== undefined) {
+          if (!(await modelListedOnProvider(ctx.llm, llmProvider, opts.model))) {
+            return { status: 'failed', text: `[model-not-on-provider] provider ${llmProvider} 的目录中没有模型 ${opts.model}；拒绝派单` }
+          }
         }
         if (llmProvider !== undefined) agentOptions.provider = llmProvider
         if (opts.reasoningEffort !== undefined) {
