@@ -59,6 +59,8 @@ export interface JisiService {
   delegate(parent: Agent, work: WorkItem, opts?: DispatchOptions): DispatchResult
   fanout(parent: Agent, work: WorkItem, models: readonly string[], opts?: DispatchOptions): Promise<Report[]>
   listModels(): Promise<ModelInfo[]>
+  /** 续聊 continuable 子代理（保留原生上下文；答案经父 agent 会话上下文回流）。 */
+  continue(parent: Agent, childId: string, message: string): Promise<void>
   /** 模型能力账本（越用越了解模型；记录/排序/摘要）。 */
   ledger: {
     record(model: string, dimension: 'execution' | 'idea', key: string, win: boolean): void
@@ -75,6 +77,7 @@ export function createJisiService(
   onLedgerChange: () => void,
 ): JisiService {
   let currentParent: Agent | undefined
+  const continuables = new Map<string, Agent>()
 
   const spawner: Spawner = {
     spawn(work, opts): DispatchResult {
@@ -84,48 +87,65 @@ export function createJisiService(
       }
       const prompt = [{ type: 'text', text: work.prompt }] as ContentBlock[]
       const report = (async (): Promise<Report> => {
-        if (opts.background === false) {
-          // 前台：一次性子代理，等结算。
-          // 路由解析：显式 LLM provider 优先；否则按 model 反查宿主 LLM provider。
-          // 注意：ctx.subagents.start 的第一参数是子代理注册表的 provider（固定默认），
-          // LLM 适配器路由只能经 agentOptions.provider 覆盖。
-          const agentOptions: AgentOptions = {}
-          if (opts.model !== undefined) agentOptions.model = opts.model
-          let llmProvider = opts.provider
-          if (llmProvider === undefined && opts.model !== undefined) {
-            llmProvider = await resolveProviderOfModel(ctx.llm, opts.model)
-          }
-          if (llmProvider !== undefined) agentOptions.provider = llmProvider
-          if (opts.reasoningEffort !== undefined) {
-            // effort 是 adapter 自有语义：只有目标模型宣告支持该 effort 才透传，
-            // 否则 DSH 子代理会因未宣告的 effort 静默失败（实测 kimi-k2.6 + high 即如此）。
-            const supported = await effortSupported(ctx.llm, llmProvider, opts.model, opts.reasoningEffort)
-            if (supported) {
-              agentOptions.reasoningEffort = opts.reasoningEffort as AgentOptions['reasoningEffort']
-            }
-          }
-          const run = await ctx.subagents.start(provider, {
-            label: 'jisi-delegate',
-            prompt,
-            parent,
-            signal: new AbortController().signal,
-            ...(Object.keys(agentOptions).length > 0 ? { agentOptions } : {}),
-          })
-          const result = await run.result
-          void settleRun(run)
-          const output = textOfBlocks(result.output)
-          // 非 completed 停因：把提供方诊断附在文本上（下游虎符/runner 据此分流限流重试）。
-          const diagnostic = result.stopReason !== 'completed' && result.diagnostic !== undefined && result.diagnostic !== ''
-            ? `\n[diagnostic] ${result.diagnostic}`
-            : ''
-          return {
-            status: reportStatus(result.stopReason),
-            text: output + diagnostic,
+        // 路由解析：显式 LLM provider 优先；否则按 model 反查宿主 LLM provider。
+        // 注意：ctx.subagents.start 的第一参数是子代理注册表的 provider（固定默认），
+        // LLM 适配器路由只能经 agentOptions.provider 覆盖。
+        const agentOptions: AgentOptions = {}
+        if (opts.model !== undefined) agentOptions.model = opts.model
+        let llmProvider = opts.provider
+        if (llmProvider === undefined && opts.model !== undefined) {
+          llmProvider = await resolveProviderOfModel(ctx.llm, opts.model)
+        }
+        if (llmProvider !== undefined) agentOptions.provider = llmProvider
+        if (opts.reasoningEffort !== undefined) {
+          // effort 是 adapter 自有语义：只有目标模型宣告支持该 effort 才透传，
+          // 否则 DSH 子代理会因未宣告的 effort 静默失败（实测 kimi-k2.6 + high 即如此）。
+          const supported = await effortSupported(ctx.llm, llmProvider, opts.model, opts.reasoningEffort)
+          if (supported) {
+            agentOptions.reasoningEffort = opts.reasoningEffort as AgentOptions['reasoningEffort']
           }
         }
-        // 后台：v1 未实现服务端自等待。continuable 子代理的 settle 通知
-        // 会送达父 agent（正是验证期主流程）；服务调用方请用 foreground。
-        throw new Error('jisi: background delegate is not implemented in v1; use background:false, or await the subagent-settled notice in the parent agent')
+        if (opts.background === true) {
+          // 后台 = continuable 子代理：初始 prompt 入箱即返；续聊经 jisi.continue；
+          // 子代理每次 settle 的通知直达父 agent 会话上下文（主 agent 下一轮读到答案，
+          // 与老架构一致的"续战"机制）。终态由调用方（虎符/主 agent）显式 report。
+          try {
+            const started = await ctx.subagents.startContinuable({
+              provider,
+              label: 'jisi-delegate',
+              request: {
+                prompt,
+                parent,
+                ...(Object.keys(agentOptions).length > 0 ? { agentOptions } : {}),
+              },
+              signal: new AbortController().signal,
+            })
+            continuables.set(started.childId, parent)
+            return { status: 'completed', text: '' } // 占位：continuable 无一次性终态
+          } catch (error) {
+            // 启动失败要显式可见（虎符 binding 会把 failed 报告喂给账本）。
+            return { status: 'failed', text: `[continuable-start-failed] ${String(error)}` }
+          }
+        }
+        // 前台：一次性子代理，等结算。
+        const run = await ctx.subagents.start(provider, {
+          label: 'jisi-delegate',
+          prompt,
+          parent,
+          signal: new AbortController().signal,
+          ...(Object.keys(agentOptions).length > 0 ? { agentOptions } : {}),
+        })
+        const result = await run.result
+        void settleRun(run)
+        const output = textOfBlocks(result.output)
+        // 非 completed 停因：把提供方诊断附在文本上（下游虎符/runner 据此分流限流重试）。
+        const diagnostic = result.stopReason !== 'completed' && result.diagnostic !== undefined && result.diagnostic !== ''
+          ? `\n[diagnostic] ${result.diagnostic}`
+          : ''
+        return {
+          status: reportStatus(result.stopReason),
+          text: output + diagnostic,
+        }
       })()
       return { ref: { id: 'one-shot' }, report }
     },
@@ -167,6 +187,14 @@ export function createJisiService(
       return withParent(parent, () => channel.fanout(work, models, opts))
     },
     listModels: () => channel.listModels(),
+    async continue(parent, childId, message) {
+      await ctx.subagents.sendMessage(
+        parent,
+        childId as never,
+        [{ type: 'text', text: message }] as ContentBlock[],
+        { signal: new AbortController().signal } as never,
+      )
+    },
     ledger: {
       record(model, dimension, key, win) {
         modelLedger.record(model, dimension, key, win)
