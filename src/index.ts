@@ -55,6 +55,9 @@ export function apply(ctx: Context, config: Config = {}): void {
     'deepseek-v4-flash': { input: 3, output: 9, cacheRead: 0.1, idle: { input: 1.5, output: 4.5, cacheRead: 0.05 } },
     'deepseek-v4-pro': { input: 9, output: 27, cacheRead: 0.3, idle: { input: 4.5, output: 13.5, cacheRead: 0.15 } },
     'deepseek-v4-flash-vision-exp': { input: 3, output: 9, cacheRead: 0.1, idle: { input: 1.5, output: 4.5, cacheRead: 0.05 } },
+    // BETA 限时内测（2026-09-08 上线，09-10 自动下线）：原生多模态新结构，官方称"每 token 未降价"
+    // → 暂按 v4-flash 价计（ESTIMATE）；并发限 20/账号。下线后此条目移除。
+    'deepseek-v4.1-flash-expires-on-0910': { input: 3, output: 9, cacheRead: 0.1, idle: { input: 1.5, output: 4.5, cacheRead: 0.05 } },
     'kimi-k3': { input: 20, output: 100, cacheRead: 2 },
     'kimi-k2.6': { input: 6.5, output: 27, cacheRead: 1.1 },
     'kimi-k2.7-code': { input: 6.5, output: 27, cacheRead: 1.3 },
