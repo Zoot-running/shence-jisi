@@ -24,6 +24,16 @@ export interface DispatchOptions {
   reasoningEffort?: string
   /** 后台执行（durable 子代理）；默认 true。 */
   background?: boolean
+  /** 中止信号（fanout drop / collect 超时用它停掉未结算路）。 */
+  signal?: AbortSignal
+  /** collect 模式总超时（ms，缺省 8 分钟）；超时中止未结算路并返回已结算子集。 */
+  timeoutMs?: number
+}
+
+/** fanout 票据（notify 模式立即返回；drop 用它停掉剩余思考）。 */
+export interface FanoutTicket {
+  readonly id: string
+  readonly models: string[]
 }
 
 /** durable 子代理引用。 */

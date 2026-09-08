@@ -15,6 +15,7 @@ import type {
   Collector,
   DispatchOptions,
   DispatchResult,
+  FanoutTicket,
   ModelInfo,
   Report,
   Spawner,
@@ -74,7 +75,18 @@ function reportStatus(stopReason: string | undefined): Report['status'] {
 /** ctx.jisi 服务面。 */
 export interface JisiService {
   delegate(parent: Agent, work: WorkItem, opts?: DispatchOptions): DispatchResult
-  fanout(parent: Agent, work: WorkItem, models: readonly string[], opts?: DispatchOptions): Promise<Report[]>
+  /**
+   * fanout（collect 语义）：并发征集，全部结算后返回（可带 timeoutMs 超时，
+   * 超时返回已结算子集并中止其余）。每份报告附 model 与信封。
+   */
+  fanout(parent: Agent, work: WorkItem, models: readonly string[], opts?: DispatchOptions): Promise<Array<Report & { model: string }>>
+  /**
+   * fanout（notify 语义，缺省）：立即返回票据；每路子代理 settle 后结果
+   * 独立送达父 agent 上下文（先完成先到，不等最慢的）。
+   */
+  fanoutNotify(parent: Agent, work: WorkItem, models: readonly string[], opts?: DispatchOptions): FanoutTicket
+  /** 丢弃 fanout：中止所有未结算路（停思考省 token）；迟到通知按票据 id 忽略。 */
+  fanoutDrop(id: string): boolean
   listModels(): Promise<ModelInfo[]>
   /** 续聊 continuable 子代理（保留原生上下文；答案经父 agent 会话上下文回流）。 */
   continue(parent: Agent, childId: string, message: string): Promise<void>
@@ -146,7 +158,7 @@ export function createJisiService(
                 parent,
                 ...(Object.keys(agentOptions).length > 0 ? { agentOptions } : {}),
               },
-              signal: new AbortController().signal,
+              signal: opts.signal ?? new AbortController().signal,
             })
             continuables.set(started.childId, parent)
             return { status: 'completed', text: '' } // 占位：continuable 无一次性终态
@@ -160,7 +172,7 @@ export function createJisiService(
           label: 'jisi-delegate',
           prompt,
           parent,
-          signal: new AbortController().signal,
+          signal: opts.signal ?? new AbortController().signal,
           ...(Object.keys(agentOptions).length > 0 ? { agentOptions } : {}),
         })
         const result = await run.result
@@ -207,13 +219,81 @@ export function createJisiService(
     }
   }
 
+  // ── fanout 管理器（notify/collect/drop 三语义） ──
+  let fanoutSeq = 0
+  const fanouts = new Map<string, { controller: AbortController; models: string[]; dropped: boolean }>()
+
+  /** 信封：把问题摘要与票据 id 烘焙进子代理 prompt，输出可溯源（多 fanout 交错不乱）。 */
+  function envelope(prompt: string, id: string, model: string): string {
+    const summary = prompt.replace(/\s+/g, ' ').trim().slice(0, 40)
+    return [
+      `[fanout:${id}] [model:${model}] [question:${summary}]`,
+      '',
+      prompt,
+      '',
+      '你的最终答复必须以这行信封开头（原样），然后才是你的完整回答：',
+      `[fanout:${id}] [model:${model}] [question:${summary}]`,
+    ].join('\n')
+  }
+
+  const fanoutNotify = (parent: Agent, work: WorkItem, fanModels: readonly string[], opts: DispatchOptions): FanoutTicket => {
+    fanoutSeq += 1
+    const id = `fanout-${fanoutSeq}`
+    const controller = new AbortController()
+    fanouts.set(id, { controller, models: [...fanModels], dropped: false })
+    withParent(parent, () => {
+      for (const model of fanModels) {
+        channel.delegate(
+          { ...work, prompt: envelope(work.prompt, id, model) },
+          { ...opts, model, background: true, signal: controller.signal },
+        )
+      }
+    })
+    return { id, models: [...fanModels] }
+  }
+
+  const fanoutDrop = (id: string): boolean => {
+    const entry = fanouts.get(id)
+    if (entry === undefined || entry.dropped) return false
+    entry.dropped = true
+    entry.controller.abort()
+    return true
+  }
+
+  const fanout = async (parent: Agent, work: WorkItem, fanModels: readonly string[], opts: DispatchOptions): Promise<Array<Report & { model: string }>> => {
+    const timeoutMs = opts.timeoutMs ?? 8 * 60_000
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    try {
+      return await withParent(parent, async () => {
+        const entries = fanModels.map(model => {
+          const result = channel.delegate(
+            { ...work, prompt: envelope(work.prompt, 'collect', model) },
+            { ...opts, model, background: false, signal: controller.signal },
+          )
+          return { model, report: result.report }
+        })
+        // 逐路安全阀：单路超时返回 [timeout] 占位，不拖垮整体。
+        return await Promise.all(entries.map(async ({ model, report }) => {
+          const settled = await Promise.race([
+            report,
+            new Promise<Report>(resolve => setTimeout(() => resolve({ status: 'failed', text: '[timeout]' }), timeoutMs + 5_000)),
+          ])
+          return { ...settled, model }
+        }))
+      })
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
   return {
     delegate(parent, work, opts = {}) {
       return withParent(parent, () => channel.delegate(work, opts))
     },
-    fanout(parent, work, models, opts = {}) {
-      return withParent(parent, () => channel.fanout(work, models, opts))
-    },
+    fanout,
+    fanoutNotify,
+    fanoutDrop,
     listModels: () => channel.listModels(),
     async continue(parent, childId, message) {
       await ctx.subagents.sendMessage(

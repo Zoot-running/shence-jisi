@@ -12,6 +12,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { ModelLedger } from './model-ledger.ts'
 import { createJisiService } from './service.ts'
+import { attachUsageMeter } from './usage-meter.ts'
 
 export const name = 'shence-jisi'
 export const inject = ['subagents', 'llm', 'tools']
@@ -79,31 +80,61 @@ export function apply(ctx: Context, config: Config = {}): void {
 
   ctx.provide('jisi', createJisiService(ctx, provider, ledger, persistLedger))
 
-  // 工具 1：fanout —— 任意 agent 随时调用；交付即结束，不做综合。
+  // 用量计量器（provider 无关）：主 agent 与全部子代理、任何 provider 路由的每次
+  // LLM 调用都进 sidecar（F9 根治；compat 适配器不再自行写入，避免双计）。
+  attachUsageMeter(ctx)
+
+  // 工具 1：fanout —— 任意 agent 随时调用；notify 缺省（先完成先到，不等慢模型）。
   ctx.tools.register(defineTool({
     name: 'jisi_fanout',
     description:
-      'Fan a prompt out to multiple models in parallel and return their raw reports, unsynthesized. ANY agent may call this at any time — especially when stuck on a hard problem and wanting diverse approaches or fresh ideas. The models are released once they answer; you decide when to call, how many models, and how many ideas to ask for (nothing is forced).',
+      'Fan a prompt out to multiple models in parallel and get their raw reports, unsynthesized. ANY agent may call this at any time — especially when stuck on a hard problem and wanting diverse approaches or fresh ideas. Default mode=notify returns immediately (each model reports independently as it finishes — the slowest never blocks you); mode=collect blocks until timeoutMinutes and returns the settled subset. Every report carries an envelope line [fanout:<id>] [model] [question] so results from multiple fanouts never get mixed up. Use jisi_fanout_drop to stop the remaining thinking once the question is answered (saves tokens).',
     parameters: {
       prompt: { type: 'string', required: true, description: 'The self-contained work/idea prompt sent to every model.' },
       models: { type: 'array', description: 'Model ids to fan out to. Default: the registered model list.' },
       effort: { type: 'string', description: 'Reasoning effort (off/low/high/max) where supported; unsupported efforts are dropped per model.' },
+      mode: { type: 'string', description: 'notify (default: return immediately, reports arrive independently) | collect (block for the settled subset).' },
+      timeoutMinutes: { type: 'number', description: 'collect mode timeout in minutes (default 8).' },
     },
     output: {
       schema: { type: 'string' },
       render: (_args, value) => [{ type: 'text', text: value }],
     },
     isConcurrencySafe: () => true,
-    async execute(args: { prompt: string; models?: string[]; effort?: string }, exec) {
+    async execute(args: { prompt: string; models?: string[]; effort?: string; mode?: string; timeoutMinutes?: number }, exec) {
       const agent = exec.agent
       if (agent === undefined) throw new Error('jisi_fanout requires a calling agent')
       const models = args.models ?? (await ctx.jisi.listModels()).map(m => m.id)
       if (models.length === 0) return 'jisi_fanout: no models registered'
-      const reports = await ctx.jisi.fanout(agent, { prompt: args.prompt }, models, {
-        background: false,
+      const opts = {
         ...(args.effort !== undefined ? { reasoningEffort: args.effort } : {}),
-      })
-      return reports.map((r, i) => `[${models[i]}] ${r.status}: ${r.text.trim()}`).join('\n\n')
+        ...(args.timeoutMinutes !== undefined ? { timeoutMs: args.timeoutMinutes * 60_000 } : {}),
+      }
+      if (args.mode === 'collect') {
+        const reports = await ctx.jisi.fanout(agent, { prompt: args.prompt }, models, opts)
+        return reports.map(r => `[${r.model}] ${r.status}: ${r.text.trim()}`).join('\n\n')
+      }
+      const ticket = ctx.jisi.fanoutNotify(agent, { prompt: args.prompt }, models, opts)
+      return `[fanout:${ticket.id}] dispatched to ${ticket.models.length} model(s) in notify mode: ${ticket.models.join(', ')}.\n` +
+        `Each model reports independently as it settles (fastest first) with the envelope [fanout:${ticket.id}] [model] [question]; wait for the reports instead of re-asking. Once the question is answered, call jisi_fanout_drop with id ${ticket.id} to stop the remaining thinking and save tokens.`
+    },
+  }))
+
+  // 工具 1b：fanout drop —— 问题已解，停掉剩余思考。
+  ctx.tools.register(defineTool({
+    name: 'jisi_fanout_drop',
+    description:
+      'Stop a fanout that is no longer needed: aborts all not-yet-settled model runs (stops their token spend) and marks the ticket dropped — late reports, if any, should be ignored by their [fanout:<id>] envelope. Call this as soon as the question the fanout was asking is answered.',
+    parameters: {
+      id: { type: 'string', required: true, description: 'The fanout id from jisi_fanout (notify mode) return.' },
+    },
+    output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
+    isConcurrencySafe: () => true,
+    async execute(args: { id: string }) {
+      const dropped = ctx.jisi.fanoutDrop(args.id)
+      return dropped
+        ? `fanout ${args.id} dropped: unsettled runs aborted; ignore any late reports carrying this id.`
+        : `fanout ${args.id}: unknown id or already dropped`
     },
   }))
 
@@ -129,18 +160,26 @@ export function apply(ctx: Context, config: Config = {}): void {
   ctx.tools.register(defineTool({
     name: 'jisi_usage',
     description:
-      'Aggregate per-model token usage and cost (CNY) from the local usage sidecar (llm-openai-compat writes every call). Kimi/DeepSeek prices are calibrated from official pricing pages (2026-09-08); DeepSeek costs respect peak vs off-peak hours (nights/weekends are half price); cache-hit tokens are priced at the cache-hit rate. GLM entries are still estimates. Use it every round to keep spend in check.',
+      'Aggregate per-model token usage and cost (CNY) from the local usage sidecar (the usage meter records every LLM call of every provider and every agent — main and subagents alike). Kimi/DeepSeek prices are calibrated from official pricing pages (2026-09-08); DeepSeek costs respect peak vs off-peak hours (nights/weekends are half price); cache-hit tokens are priced at the cache-hit rate. GLM entries are still estimates. Use it every round to keep spend in check.',
     parameters: {},
     output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
     isConcurrencySafe: () => true,
     async execute() {
       const sidecar = join(process.env.DSH_HOME ?? '.', 'storages', 'llm-usage.jsonl')
       const totals = new Map<string, { calls: number; input: number; output: number; reasoning: number; cacheRead: number; cost: number }>()
+      // 去重：meter 行带 (sid, seq)（会话 id + 事件序号）；会话重载/进程重启重放会产生
+      // 重复行，按 (sid, seq) 去重。旧 compat 行无 sid → 不参与去重（原样计入）。
+      const seen = new Set<string>()
       try {
         if (existsSync(sidecar)) {
           for (const line of readFileSync(sidecar, 'utf8').split('\n')) {
             if (line.trim() === '') continue
-            const record = JSON.parse(line) as { provider?: string; model?: string; inputTokens?: number; outputTokens?: number; reasoningTokens?: number; cacheReadTokens?: number; at?: number }
+            const record = JSON.parse(line) as { provider?: string; model?: string; inputTokens?: number; outputTokens?: number; reasoningTokens?: number; cacheReadTokens?: number; at?: number; sid?: string; seq?: number }
+            if (record.sid !== undefined && record.seq !== undefined) {
+              const dedupeKey = `${record.sid}#${record.seq}`
+              if (seen.has(dedupeKey)) continue
+              seen.add(dedupeKey)
+            }
             const key = `${record.provider ?? '?'}/${record.model ?? '?'}`
             const t = totals.get(key) ?? { calls: 0, input: 0, output: 0, reasoning: 0, cacheRead: 0, cost: 0 }
             t.calls += 1
