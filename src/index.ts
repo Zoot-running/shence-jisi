@@ -41,18 +41,25 @@ export interface Config {
   /** 单价表（每 1M token 的 CNY）。input=输入缓存未命中价；cacheRead=缓存命中价（缺省按 input）；output=输出价；
    * reasoning 缺省按 output 计；idle=空闲时段价（DeepSeek 夜间/周末半价，缺省同 input/output/cacheRead）。 */
   priceTable?: Record<string, { input: number; output: number; reasoning?: number; cacheRead?: number; idle?: { input: number; output: number; cacheRead?: number } }>
+  /** 临时停用模型清单（如 2026-09-10 DeepSeek 官方把 v4-pro 全量路由至 4.1-flash 后暂停 pro）：
+   * listModels/fanout 缺省/能力账本摘要一律不出现；显式派单响亮失败 [model-disabled]。 */
+  disabledModels?: string[]
 }
 
 export function apply(ctx: Context, config: Config = {}): void {
   const provider = config.provider ?? 'spawn'
   const ledgerPath = config.ledgerPath ?? join(process.env.DSH_HOME ?? '.', 'storages', 'jisi-model-ledger.json')
-  const priceOrder = config.priceOrder ?? ['glm-5.3-flash', 'glm-4.5-air', 'glm-4.6', 'glm-4.7', 'deepseek-v4-flash', 'kimi-k2.6', 'kimi-k2.7-code', 'glm-5.3', 'deepseek-v4-pro', 'kimi-k2.7-code-highspeed', 'kimi-k3']
+  const disabledModels = new Set(config.disabledModels ?? [])
+  const priceOrder = config.priceOrder ?? ['glm-5.3-flash', 'glm-4.5-air', 'glm-4.6', 'glm-4.7', 'deepseek-v4-flash', 'kimi-k2.6', 'kimi-k2.7-code', 'glm-5.3', 'kimi-k2.7-code-highspeed', 'kimi-k3']
   const priceTable = config.priceTable ?? {
     // 单价（CNY / 1M token）。2026-09-08 按官方定价页校准：
     //  - Kimi：platform.kimi.com/docs/pricing/{chat-k3,chat-k27-code,chat-k26}
     //  - DeepSeek：api-docs.deepseek.com/zh-cn/quick_start/pricing/（峰/谷双价，谷=半价；高峰=周一至五 9-12/14-18）
     //  - GLM：仍为估算（待智谱平台价格页核对，见 shence-junji VALIDATION/L2-MODEL-CATALOG-2026-09.md）
     'deepseek-v4-flash': { input: 3, output: 9, cacheRead: 0.1, idle: { input: 1.5, output: 4.5, cacheRead: 0.05 } },
+    // 2026-09-10 官方公告：v4-pro 句柄全量路由至新模型 V4.1-Flash（老 V4-Pro-0813 退役），按 flash 价结算。
+    // 本条目保留 09-10 前历史价（run≤7 的账按此实扣）；pro 已加入 disabledModels 临时停用——
+    // 若日后重新启用，必须先按官方新结算价改本行。
     'deepseek-v4-pro': { input: 9, output: 27, cacheRead: 0.3, idle: { input: 4.5, output: 13.5, cacheRead: 0.15 } },
     'deepseek-v4-flash-vision-exp': { input: 3, output: 9, cacheRead: 0.1, idle: { input: 1.5, output: 4.5, cacheRead: 0.05 } },
     // BETA 限时内测（2026-09-08 上线，09-10 自动下线）：原生多模态新结构，官方称"每 token 未降价"
@@ -81,7 +88,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     } catch { /* 落盘失败不致命 */ }
   }
 
-  ctx.provide('jisi', createJisiService(ctx, provider, ledger, persistLedger))
+  ctx.provide('jisi', createJisiService(ctx, provider, ledger, persistLedger, disabledModels))
 
   // 用量计量器（provider 无关）：主 agent 与全部子代理、任何 provider 路由的每次
   // LLM 调用都进 sidecar（F9 根治；compat 适配器不再自行写入，避免双计）。
@@ -153,7 +160,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     },
     isConcurrencySafe: () => true,
     async execute() {
-      const summary = ctx.jisi.ledger.summary()
+      const summary = ctx.jisi.ledger.summary().filter(s => !disabledModels.has(s.model))
       if (summary.length === 0) return 'jisi_model_report: ledger is empty (cold start — all candidates equal, cheapest wins)'
       return summary.map(s => `${s.dimension}/${s.key} ${s.model}: ${s.wins}/${s.attempts} (rate ${s.rate.toFixed(2)})`).join('\n')
     },

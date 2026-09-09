@@ -104,6 +104,7 @@ export function createJisiService(
   provider: string,
   modelLedger: ModelLedger,
   onLedgerChange: () => void,
+  disabledModels: ReadonlySet<string> = new Set(),
 ): JisiService {
   let currentParent: Agent | undefined
   const continuables = new Map<string, Agent>()
@@ -116,6 +117,10 @@ export function createJisiService(
       }
       const prompt = [{ type: 'text', text: work.prompt }] as ContentBlock[]
       const report = (async (): Promise<Report> => {
+        // 临时停用模型：任何显式派单一律响亮失败（不静默换模型、不落正常账）。
+        if (opts.model !== undefined && disabledModels.has(opts.model)) {
+          return { status: 'failed', text: `[model-disabled] 模型 ${opts.model} 已被临时停用（jisi disabledModels 配置）；换用其他模型或先联系管理员恢复` }
+        }
         // 路由解析：显式 LLM provider 优先；否则按 model 反查宿主 LLM provider。
         // 注意：ctx.subagents.start 的第一参数是子代理注册表的 provider（固定默认），
         // LLM 适配器路由只能经 agentOptions.provider 覆盖。
@@ -202,6 +207,7 @@ export function createJisiService(
     for (const provider of ctx.llm.listProviders()) {
       const infos = await ctx.llm.listModels(provider.id)
       for (const info of infos) {
+        if (disabledModels.has(info.id)) continue
         out.push({ id: info.id, provider: info.provider })
       }
     }

@@ -11,6 +11,14 @@
 - **主 agent 自换模型**：经用户同意（复用 DSH permission-presets 门禁）；
 - 模型清单从 DSH provider 配置动态读取，不内置。
 
+## 配置
+
+- `disabledModels?: string[]` —— 临时停用模型清单：`listModels`（含 fanout 缺省目录、
+  校场 enqueue 目录校验）与能力账本摘要一律不出现；显式派单响亮失败 `[model-disabled]`。
+  用途：供应商改路由/退役模型时（如 2026-09-10 DeepSeek 把 v4-pro 路由至 4.1-flash），
+  先停用再评估，防止按旧身份计价/计能力。恢复前必须同步核对 priceTable。
+- 其余配置（priceOrder/priceTable/ledgerPath）见 `src/index.ts` 的 `Config`。
+
 ## 边界
 
 - 独立可运行，不依赖虎符（shence-hufu 反向软依赖本通道）；
