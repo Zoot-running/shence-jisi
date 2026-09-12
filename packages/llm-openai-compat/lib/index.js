@@ -86,6 +86,9 @@ function buildRequest(options, thinking) {
     const effort = String(options.reasoningEffort);
     const value = thinking.efforts[effort] ?? thinking.efforts[thinking.defaultEffort ?? ""];
     if (value !== void 0) request[thinking.param] = value;
+    if (thinking.effortParam !== void 0 && (effort === "low" || effort === "high" || effort === "max")) {
+      request[thinking.effortParam] = effort;
+    }
   }
   return request;
 }
@@ -344,6 +347,7 @@ var Config = z.object({
           thinking: z.object({
             param: z.string(),
             efforts: z.dict(z.any()),
+            effortParam: z.string(),
             defaultEffort: z.string(),
             names: z.dict(z.string())
           })

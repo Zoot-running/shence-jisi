@@ -23,6 +23,8 @@ export interface RouteConfig {
     thinking?: {
       param: string
       efforts: Record<string, unknown>
+      /** 可选：effort id 直传的第二个 wire 参数名（如 DeepSeek 的 reasoning_effort）。 */
+      effortParam?: string
       defaultEffort?: string
       names?: Record<string, string>
     }
@@ -47,6 +49,7 @@ export const Config: z<Config> = z.object({
           thinking: z.object({
             param: z.string(),
             efforts: z.dict(z.any()),
+            effortParam: z.string(),
             defaultEffort: z.string(),
             names: z.dict(z.string()),
           }),

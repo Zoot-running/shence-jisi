@@ -25,6 +25,8 @@ export interface ModelThinking {
   readonly param: string
   /** effort id → wire 值；调用方 reasoningEffort 在此查找。 */
   readonly efforts: Readonly<Record<string, unknown>>
+  /** 可选：effort id（low/high/max）直传的第二个 wire 参数名（如 reasoning_effort）。 */
+  readonly effortParam?: string
   /** 调用方未指定 effort 时应用的默认 id。 */
   readonly defaultEffort?: string
   /** effort id → 展示名（选型/诊断用）。 */

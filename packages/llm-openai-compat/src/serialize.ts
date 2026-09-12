@@ -103,6 +103,11 @@ export function buildRequest(options: GenerateOptions, thinking?: ModelThinking)
     const effort = String(options.reasoningEffort)
     const value = thinking.efforts[effort] ?? thinking.efforts[thinking.defaultEffort ?? '']
     if (value !== undefined) request[thinking.param] = value
+    // effortParam 直传（DeepSeek 需要 reasoning_effort 与 thinking 同时下发）：
+    // 仅 low/high/max 档直传 effort id 字符串；off 档已映射为 thinking disabled。
+    if (thinking.effortParam !== undefined && (effort === 'low' || effort === 'high' || effort === 'max')) {
+      request[thinking.effortParam] = effort
+    }
   }
   return request
 }
