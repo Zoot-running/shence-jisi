@@ -211,7 +211,12 @@ export function apply(ctx: Context, config: Config = {}): void {
               // 峰/谷计价：DeepSeek 高峰=北京时间周一至五 9:00-12:00、14:00-18:00，其余半价。
               const p = isBeijingPeak(record.at) ? price : (price.idle ?? price)
               const hit = p.cacheRead ?? p.input
-              t.cost += (ri * p.input + rc * hit + ro * p.output + rr * (p.reasoning ?? p.output)) / 1_000_000
+              // 2026-09-12 实测（run 11 对账 + 裸调探针）：
+              //  ① outputTokens = completion_tokens 已含 reasoning（DS/Kimi/GLM 三探针均证），
+              //    reasoningTokens 只是其子集——旧公式再乘一次 reasoning 价 = 双重计价，已删；
+              //  ② Kimi/GLM 侧曾被 compat 旧 lib 重复写行（无 sid/seq 不参与去重）→ 已由
+              //    source 修复 + profile 重装解决（见 junji L4-RUN17497-live）。
+              t.cost += (ri * p.input + rc * hit + ro * p.output) / 1_000_000
             }
             totals.set(key, t)
           }
