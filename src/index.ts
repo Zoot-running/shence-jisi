@@ -49,7 +49,8 @@ export interface Config {
    * listModels/fanout 缺省/能力账本摘要一律不出现；显式派单响亮失败 [model-disabled]。 */
   disabledModels?: string[]
   /** fanout 缺省模型档（F34, run 17923 账单实锤）：未显式给 models 时只扇这些——
-   * 缺省 flash 系。智谱钱包 2026-09-13 归零(充值400/已花400)、kimi 贵——都只显式才上。
+   * 缺省 flash 系(vision-exp 是 V4.1-Flash 的退役别名, 去掉防视觉名误导)。
+   * 智谱钱包 2026-09-13 归零(充值400/已花400)、kimi 贵——都只显式才上。
    * 这不是限制——agent 想多视角随时可显式 models；是修掉"没指定=全模型"的危险兜底。 */
   fanoutDefaultModels?: string[]
 }
@@ -58,7 +59,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   const provider = config.provider ?? 'spawn'
   const ledgerPath = config.ledgerPath ?? join(process.env.DSH_HOME ?? '.', 'storages', 'jisi-model-ledger.json')
   const disabledModels = new Set(config.disabledModels ?? [])
-  const fanoutDefaultModels = config.fanoutDefaultModels ?? ['deepseek-v4-flash', 'deepseek-flash', 'deepseek-v4-flash-vision-exp']
+  const fanoutDefaultModels = config.fanoutDefaultModels ?? ['deepseek-v4-flash', 'deepseek-flash']
   const priceOrder = config.priceOrder ?? ['glm-5.3-flash', 'glm-4.5-air', 'glm-4.6', 'glm-4.7', 'deepseek-v4-flash', 'deepseek-flash', 'kimi-k2.6', 'kimi-k2.7-code', 'glm-5.3', 'kimi-k2.7-code-highspeed', 'kimi-k3']
   const priceTable = config.priceTable ?? {
     // 单价（CNY / 1M token）。2026-09-11 按官方定价页再校准：
