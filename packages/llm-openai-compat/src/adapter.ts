@@ -4,6 +4,7 @@
  * @module @shence/llm-openai-compat/adapter
  */
 
+import { isBalanceExhausted, recordBalanceExhausted } from './balance-guard.ts'
 import { attributionHeaders, assertUsableApiKey, LlmError, LlmAdapter, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type {
   GenerateOptions,
@@ -128,11 +129,27 @@ export class OpenAICompatAdapter extends LlmAdapter {
 
     if (!response.ok) {
       let detail = ''
+      let wireText = ''
       try {
         const body = (await response.json()) as WireError
         detail = body.error?.message ?? ''
+        wireText = JSON.stringify(body)
       } catch {
         /* 忽略错误体解析失败 */
+      }
+      // F35 余额枯竭检测: 401/402/403/429 + 余额语义(kimi 文案/zhipu code 1113/通用 balance|quota)
+      // → 写 sidecar 隔离 + 响亮错误(agent 会把它带进战报 → 用户看到充值提示)。
+      const text = `${wireText} ${detail}`
+      if (isBalanceExhausted(response.status, text)) {
+        recordBalanceExhausted(options.provider, options.model, detail, response.status)
+        yield {
+          type: 'finish',
+          reason: { kind: 'error', error: {
+            message: `[余额枯竭] ${options.provider}/${options.model}: ${detail || response.status} — 该模型已隔离, 请勿重试; 把这条写进战报/最终消息提示用户充值`,
+            code: 'BALANCE_EXHAUSTED', status: response.status,
+          } },
+        }
+        return
       }
       yield {
         type: 'finish',

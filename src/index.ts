@@ -11,6 +11,7 @@ import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { ModelLedger, type ModelLedgerData } from './model-ledger.ts'
+import { readBalanceExhausted } from '@shence/llm-openai-compat'
 import { createJisiService } from './service.ts'
 import { attachUsageMeter } from './usage-meter.ts'
 
@@ -59,7 +60,9 @@ export function apply(ctx: Context, config: Config = {}): void {
   const provider = config.provider ?? 'spawn'
   const ledgerPath = config.ledgerPath ?? join(process.env.DSH_HOME ?? '.', 'storages', 'jisi-model-ledger.json')
   const disabledModels = new Set(config.disabledModels ?? [])
-  const fanoutDefaultModels = config.fanoutDefaultModels ?? ['deepseek-v4-flash', 'deepseek-flash']
+  const fanoutDefaultModels = config.fanoutDefaultModels ?? ['deepseek-v4-flash', 'deepseek-flash', 'glm-5.3-flash']
+  // F35 余额枯竭隔离: 每次调用重读 sidecar(跨会话由盘文件同步, 与分叉信箱同机制)。
+  const exhaustedProviders = (): Set<string> => new Set(readBalanceExhausted().map(r => r.provider))
   const priceOrder = config.priceOrder ?? ['glm-5.3-flash', 'glm-4.5-air', 'glm-4.6', 'glm-4.7', 'deepseek-v4-flash', 'deepseek-flash', 'kimi-k2.6', 'kimi-k2.7-code', 'glm-5.3', 'kimi-k2.7-code-highspeed', 'kimi-k3']
   const priceTable = config.priceTable ?? {
     // 单价（CNY / 1M token）。2026-09-11 按官方定价页再校准：
@@ -120,7 +123,18 @@ export function apply(ctx: Context, config: Config = {}): void {
   // 种子基线立即落盘成运行账本：重启/新进程都从"种子+本 run 战绩"续跑。
   if (seeded) persistLedger()
 
-  ctx.provide('jisi', createJisiService(ctx, provider, ledger, persistLedger, disabledModels))
+  const jisiService = createJisiService(ctx, provider, ledger, persistLedger, disabledModels)
+  // F35: 余额隔离查询(供 runner 派单 F8 护栏复用)。
+  ctx.provide('jisi', {
+    ...jisiService,
+    isModelQuarantined: async (model: string): Promise<boolean> => {
+      try {
+        const catalog = await jisiService.listModels()
+        const info = catalog.find(m => m.id === model)
+        return info !== undefined && exhaustedProviders().has(info.provider)
+      } catch { return false }
+    },
+  })
 
   // 用量计量器（provider 无关）：主 agent 与全部子代理、任何 provider 路由的每次
   // LLM 调用都进 sidecar（F9 根治；compat 适配器不再自行写入，避免双计）。
@@ -147,8 +161,14 @@ export function apply(ctx: Context, config: Config = {}): void {
       const agent = exec.agent
       if (agent === undefined) throw new Error('jisi_fanout requires a calling agent')
       // F34: 缺省 = 便宜档(flash 系 + glm-flash); 贵模型只显式才上(run 17923: kimi fanout ¥100 实锤)。
-      const models = args.models ?? (await ctx.jisi.listModels()).map(m => m.id).filter(m => fanoutDefaultModels.includes(m))
-      if (models.length === 0) return 'jisi_fanout: no models registered'
+      // F35: 余额枯竭 provider 的模型自动隔离(缺省剔除; 显式派单响亮失败)。
+      const catalog = await ctx.jisi.listModels()
+      const exhausted = exhaustedProviders()
+      const models = (args.models ?? catalog.map(m => m.id).filter(m => fanoutDefaultModels.includes(m)))
+        .filter(m => !exhausted.has(catalog.find(c => c.id === m)?.provider ?? ''))
+      const blocked = (args.models ?? []).filter(m => exhausted.has(catalog.find(c => c.id === m)?.provider ?? ''))
+      if (blocked.length > 0) return `jisi_fanout: 拒绝显式派单 ${blocked.join(', ')}——该 provider 余额已枯竭(隔离中)。换模型; 并把"XX 余额不足"写进最终战报提示用户充值。`
+      if (models.length === 0) return 'jisi_fanout: no models registered (check 余额隔离)'
       const opts = {
         ...(args.effort !== undefined ? { reasoningEffort: args.effort } : {}),
         ...(args.timeoutMinutes !== undefined ? { timeoutMs: args.timeoutMinutes * 60_000 } : {}),
@@ -179,14 +199,18 @@ export function apply(ctx: Context, config: Config = {}): void {
       if (agent === undefined) throw new Error('jisi_fanout_bulk requires a calling agent')
       const specs = args.specs ?? []
       if (specs.length === 0) return 'jisi_fanout_bulk: empty specs'
-      const allIds = (await ctx.jisi.listModels()).map(m => m.id)
+      const catalog = await ctx.jisi.listModels()
+      const allIds = catalog.map(m => m.id)
+      // F35: 余额枯竭 provider 的模型自动隔离。
+      const exhausted = exhaustedProviders()
       // F34: spec 未显式给 models → flash 系缺省(与 jisi_fanout 同档); 贵模型/glm 只显式才上。
-      const defaultIds = allIds.filter(m => fanoutDefaultModels.includes(m))
+      const defaultIds = allIds.filter(m => fanoutDefaultModels.includes(m) && !exhausted.has(catalog.find(c => c.id === m)?.provider ?? ''))
       // 安全上限：单次批量最多 400 路 delegate（40 题 × 10 模型量级）。
       let totalDelegates = 0
       const spawned: string[] = []
       for (const spec of specs) {
         const models = (spec.models && spec.models.length > 0 ? spec.models : defaultIds)
+          .filter(m => !exhausted.has(catalog.find(c => c.id === m)?.provider ?? ''))
         if (totalDelegates + models.length > 400) break
         const opts = { ...(spec.effort !== undefined ? { reasoningEffort: spec.effort } : {}) }
         const ticket = ctx.jisi.fanoutNotify(agent, { prompt: spec.prompt }, models, opts)
@@ -228,8 +252,11 @@ export function apply(ctx: Context, config: Config = {}): void {
     isConcurrencySafe: () => true,
     async execute() {
       const summary = ctx.jisi.ledger.summary().filter(s => !disabledModels.has(s.model))
-      if (summary.length === 0) return 'jisi_model_report: ledger is empty (cold start — all candidates equal, cheapest wins)'
-      return summary.map(s => `${s.dimension}/${s.key} ${s.model}: ${s.wins}/${s.attempts} (rate ${s.rate.toFixed(2)})`).join('\n')
+      const lines = summary.map(s => `${s.dimension}/${s.key} ${s.model}: ${s.wins}/${s.attempts} (rate ${s.rate.toFixed(2)})`)
+      const ex = [...exhaustedProviders()]
+      if (ex.length > 0) lines.push(`⚠️ 余额枯竭隔离: ${ex.join(', ')} —— 相关模型已自动剔除, 请写进最终战报提示用户充值`)
+      if (lines.length === 0) return 'jisi_model_report: ledger is empty (cold start — all candidates equal, cheapest wins)'
+      return lines.join('\n')
     },
   }))
 
