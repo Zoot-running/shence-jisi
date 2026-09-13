@@ -134,6 +134,38 @@ export function apply(ctx: Context, config: Config = {}): void {
     },
   }))
 
+  // 工具 1c：fanout bulk —— F31：一次调用扇出全部征思路任务（托管网关 20s/轮
+  // 的链路税被摊薄到整批），发兵不再受主 agent 回合循环速度限制。
+  ctx.tools.register(defineTool({
+    name: 'jisi_fanout_bulk',
+    description:
+      'Bulk fanout (F31): one tool call spawns idea-collection delegates for MANY prompts × models at once. This is THE way to run the opening idea sweep in hosted mode — each main-agent round-trip costs ~20s through the platform gateway, so issue the whole sweep in one call instead of one fanout per round. Returns immediately (notify semantics): every report arrives independently with its [fanout:<id>] [model] [question] envelope.',
+    parameters: {
+      specs: { type: 'array', required: true, description: 'Fanout specs: [{prompt (required), models? (default all), effort?}]' },
+    },
+    output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
+    isConcurrencySafe: () => true,
+    async execute(args: { specs?: Array<{ prompt: string; models?: string[]; effort?: string }> }, exec) {
+      const agent = exec.agent
+      if (agent === undefined) throw new Error('jisi_fanout_bulk requires a calling agent')
+      const specs = args.specs ?? []
+      if (specs.length === 0) return 'jisi_fanout_bulk: empty specs'
+      const allIds = (await ctx.jisi.listModels()).map(m => m.id)
+      // 安全上限：单次批量最多 400 路 delegate（40 题 × 10 模型量级）。
+      let totalDelegates = 0
+      const spawned: string[] = []
+      for (const spec of specs) {
+        const models = (spec.models && spec.models.length > 0 ? spec.models : allIds)
+        if (totalDelegates + models.length > 400) break
+        const opts = { ...(spec.effort !== undefined ? { reasoningEffort: spec.effort } : {}) }
+        const ticket = ctx.jisi.fanoutNotify(agent, { prompt: spec.prompt }, models, opts)
+        totalDelegates += ticket.models.length
+        spawned.push(ticket.id)
+      }
+      return `jisi_fanout_bulk: ${spawned.length} fanouts spawned (${totalDelegates} model delegates total), ids: ${spawned.join(', ')}.\nReports arrive independently with [fanout:<id>] [model] [question] envelopes; wait for them (xiaochang_wait wakes on their arrival) and call jisi_fanout_drop <id> once a question is answered.`
+    },
+  }))
+
   // 工具 1b：fanout drop —— 问题已解，停掉剩余思考。
   ctx.tools.register(defineTool({
     name: 'jisi_fanout_drop',
