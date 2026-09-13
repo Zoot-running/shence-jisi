@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { ModelLedger } from './model-ledger.ts'
+import { ModelLedger, type ModelLedgerData } from './model-ledger.ts'
 import { createJisiService } from './service.ts'
 import { attachUsageMeter } from './usage-meter.ts'
 
@@ -36,6 +36,10 @@ export interface Config {
   provider?: string
   /** 模型能力账本路径（默认 $DSH_HOME/storages/jisi-model-ledger.json）。 */
   ledgerPath?: string
+  /** 能力账本种子路径（F33 ①）：本进程首次启动（运行账本不存在）时以此为基线。
+   * 默认 $DSH_HOME/storages/jisi-model-ledger.seed.json。种子只允许 execution 维度
+   * （规则 6 审计豁免：镜像内禁带 idea 维度/组织画像），加载时强制过滤。 */
+  seedLedgerPath?: string
   /** 模型价格序（便宜→贵，同分经济性 tiebreak）。 */
   priceOrder?: string[]
   /** 单价表（每 1M token 的 CNY）。input=输入缓存未命中价；cacheRead=缓存命中价（缺省按 input）；output=输出价；
@@ -81,16 +85,34 @@ export function apply(ctx: Context, config: Config = {}): void {
   }
 
   // 能力账本：本地落盘，跨 run 积累。
+  // F33 ① 种子：运行账本不存在时以镜像种子为基线（选模型有据，不再冷启动 0.5 平权）。
+  // 种子只保留 execution 维度——加载即过滤，任何 idea/org 维度即使混入镜像也不生效（规则 6 审计）。
+  const seedLedgerPath = config.seedLedgerPath ?? join(process.env.DSH_HOME ?? '.', 'storages', 'jisi-model-ledger.seed.json')
   let ledger = new ModelLedger()
+  let seeded = false
   try {
-    if (existsSync(ledgerPath)) ledger = ModelLedger.fromJSON(JSON.parse(readFileSync(ledgerPath, 'utf8')))
-  } catch { /* 账本损坏：空账本起跑 */ }
+    if (existsSync(ledgerPath)) {
+      ledger = ModelLedger.fromJSON(JSON.parse(readFileSync(ledgerPath, 'utf8')))
+    } else if (existsSync(seedLedgerPath)) {
+      const raw = JSON.parse(readFileSync(seedLedgerPath, 'utf8')) as ModelLedgerData | undefined
+      const executionOnly: ModelLedgerData = { models: {} }
+      for (const [model, m] of Object.entries(raw?.models ?? {})) {
+        const exec = m?.dimensions?.execution
+        if (exec === undefined) continue
+        executionOnly.models[model] = { dimensions: { execution: exec } }
+      }
+      ledger = ModelLedger.fromJSON(executionOnly)
+      seeded = true
+    }
+  } catch { /* 账本/种子损坏：空账本起跑 */ }
   const persistLedger = (): void => {
     try {
       mkdirSync(join(ledgerPath, '..'), { recursive: true })
       writeFileSync(ledgerPath, JSON.stringify(ledger.toJSON()))
     } catch { /* 落盘失败不致命 */ }
   }
+  // 种子基线立即落盘成运行账本：重启/新进程都从"种子+本 run 战绩"续跑。
+  if (seeded) persistLedger()
 
   ctx.provide('jisi', createJisiService(ctx, provider, ledger, persistLedger, disabledModels))
 
