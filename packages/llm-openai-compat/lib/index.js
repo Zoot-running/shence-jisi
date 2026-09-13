@@ -1,6 +1,41 @@
 // src/index.ts
 import z from "@deepseek-ai/schemastery";
 
+// src/balance-guard.ts
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+var BALANCE_PATTERN = /(balance|insufficient|余额|quota|not enough|out of money)/i;
+var STATUS_SET = /* @__PURE__ */ new Set([401, 402, 403, 429]);
+function isBalanceExhausted(status, text) {
+  return STATUS_SET.has(status) && BALANCE_PATTERN.test(text);
+}
+function recordBalanceExhausted(provider, model, detail, status) {
+  try {
+    const dir = join(process.env.DSH_HOME ?? ".", "storages");
+    mkdirSync(dir, { recursive: true });
+    appendFileSync(
+      join(dir, "provider-balance-exhausted.jsonl"),
+      JSON.stringify({ provider, model, detail: detail.slice(0, 300), status, at: Date.now() }) + "\n"
+    );
+  } catch {
+  }
+}
+function readBalanceExhausted() {
+  try {
+    const p = join(process.env.DSH_HOME ?? ".", "storages", "provider-balance-exhausted.jsonl");
+    if (!existsSync(p)) return [];
+    return readFileSync(p, "utf8").split("\n").filter((l) => l.trim() !== "").map((l) => {
+      try {
+        return JSON.parse(l);
+      } catch {
+        return null;
+      }
+    }).filter((r) => r !== null);
+  } catch {
+    return [];
+  }
+}
+
 // src/adapter.ts
 import { attributionHeaders, assertUsableApiKey, LlmError as LlmError3, LlmAdapter, ReasoningEffortId } from "@deepseek-ai/dsh-llm";
 
@@ -307,10 +342,25 @@ var OpenAICompatAdapter = class extends LlmAdapter {
     }
     if (!response.ok) {
       let detail = "";
+      let wireText = "";
       try {
         const body = await response.json();
         detail = body.error?.message ?? "";
+        wireText = JSON.stringify(body);
       } catch {
+      }
+      const text = `${wireText} ${detail}`;
+      if (isBalanceExhausted(response.status, text)) {
+        recordBalanceExhausted(options.provider, options.model, detail, response.status);
+        yield {
+          type: "finish",
+          reason: { kind: "error", error: {
+            message: `[\u4F59\u989D\u67AF\u7AED] ${options.provider}/${options.model}: ${detail || response.status} \u2014 \u8BE5\u6A21\u578B\u5DF2\u9694\u79BB, \u8BF7\u52FF\u91CD\u8BD5; \u628A\u8FD9\u6761\u5199\u8FDB\u6218\u62A5/\u6700\u7EC8\u6D88\u606F\u63D0\u793A\u7528\u6237\u5145\u503C`,
+            code: "BALANCE_EXHAUSTED",
+            status: response.status
+          } }
+        };
+        return;
       }
       yield {
         type: "finish",
@@ -381,5 +431,8 @@ export {
   Config,
   apply,
   inject,
-  name
+  isBalanceExhausted,
+  name,
+  readBalanceExhausted,
+  recordBalanceExhausted
 };

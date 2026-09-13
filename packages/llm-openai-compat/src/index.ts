@@ -80,3 +80,6 @@ export function apply(ctx: Context, config: Config): void {
   }
   ctx.llm.registerAdapter([...routes.keys()], new OpenAICompatAdapter(routes))
 }
+
+// F35: 余额枯竭检测/隔离 pure-logic 导出（jisi 复用；DSH 插件加载器也可见）。
+export { isBalanceExhausted, readBalanceExhausted, recordBalanceExhausted } from './balance-guard.ts'
