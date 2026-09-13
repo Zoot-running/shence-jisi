@@ -48,12 +48,17 @@ export interface Config {
   /** 临时停用模型清单（如 2026-09-10 DeepSeek 官方把 v4-pro 全量路由至 4.1-flash 后暂停 pro）：
    * listModels/fanout 缺省/能力账本摘要一律不出现；显式派单响亮失败 [model-disabled]。 */
   disabledModels?: string[]
+  /** fanout 缺省模型档（F34, run 17923 账单实锤）：未显式给 models 时只扇这些——
+   * 缺省 flash 系。智谱钱包 2026-09-13 归零(充值400/已花400)、kimi 贵——都只显式才上。
+   * 这不是限制——agent 想多视角随时可显式 models；是修掉"没指定=全模型"的危险兜底。 */
+  fanoutDefaultModels?: string[]
 }
 
 export function apply(ctx: Context, config: Config = {}): void {
   const provider = config.provider ?? 'spawn'
   const ledgerPath = config.ledgerPath ?? join(process.env.DSH_HOME ?? '.', 'storages', 'jisi-model-ledger.json')
   const disabledModels = new Set(config.disabledModels ?? [])
+  const fanoutDefaultModels = config.fanoutDefaultModels ?? ['deepseek-v4-flash', 'deepseek-flash', 'deepseek-v4-flash-vision-exp']
   const priceOrder = config.priceOrder ?? ['glm-5.3-flash', 'glm-4.5-air', 'glm-4.6', 'glm-4.7', 'deepseek-v4-flash', 'deepseek-flash', 'kimi-k2.6', 'kimi-k2.7-code', 'glm-5.3', 'kimi-k2.7-code-highspeed', 'kimi-k3']
   const priceTable = config.priceTable ?? {
     // 单价（CNY / 1M token）。2026-09-11 按官方定价页再校准：
@@ -127,7 +132,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       'Fan a prompt out to multiple models in parallel and get their raw reports, unsynthesized. ANY agent may call this at any time — especially when stuck on a hard problem and wanting diverse approaches or fresh ideas. Default mode=notify returns immediately (each model reports independently as it finishes — the slowest never blocks you); mode=collect blocks until timeoutMinutes and returns the settled subset. Every report carries an envelope line [fanout:<id>] [model] [question] so results from multiple fanouts never get mixed up. Use jisi_fanout_drop to stop the remaining thinking once the question is answered (saves tokens).',
     parameters: {
       prompt: { type: 'string', required: true, description: 'The self-contained work/idea prompt sent to every model.' },
-      models: { type: 'array', description: 'Model ids to fan out to. Default: the registered model list.' },
+      models: { type: 'array', description: 'Model ids to fan out to. Default: flash family only (glm wallet depleted, kimi expensive); others only when explicitly listed (F34).' },
       effort: { type: 'string', description: 'Reasoning effort (off/low/high/max) where supported; unsupported efforts are dropped per model.' },
       mode: { type: 'string', description: 'notify (default: return immediately, reports arrive independently) | collect (block for the settled subset).' },
       timeoutMinutes: { type: 'number', description: 'collect mode timeout in minutes (default 8).' },
@@ -164,7 +169,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     description:
       'Bulk fanout (F31): one tool call spawns idea-collection delegates for MANY prompts × models at once. This is THE way to run the opening idea sweep in hosted mode — each main-agent round-trip costs ~20s through the platform gateway, so issue the whole sweep in one call instead of one fanout per round. Returns immediately (notify semantics): every report arrives independently with its [fanout:<id>] [model] [question] envelope.',
     parameters: {
-      specs: { type: 'array', required: true, description: 'Fanout specs: [{prompt (required), models? (default all), effort?}]' },
+      specs: { type: 'array', required: true, description: 'Fanout specs: [{prompt (required), models? (default flash family only), effort?}]' },
     },
     output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
     isConcurrencySafe: () => true,
@@ -174,11 +179,13 @@ export function apply(ctx: Context, config: Config = {}): void {
       const specs = args.specs ?? []
       if (specs.length === 0) return 'jisi_fanout_bulk: empty specs'
       const allIds = (await ctx.jisi.listModels()).map(m => m.id)
+      // F34: spec 未显式给 models → flash 系缺省(与 jisi_fanout 同档); 贵模型/glm 只显式才上。
+      const defaultIds = allIds.filter(m => fanoutDefaultModels.includes(m))
       // 安全上限：单次批量最多 400 路 delegate（40 题 × 10 模型量级）。
       let totalDelegates = 0
       const spawned: string[] = []
       for (const spec of specs) {
-        const models = (spec.models && spec.models.length > 0 ? spec.models : allIds)
+        const models = (spec.models && spec.models.length > 0 ? spec.models : defaultIds)
         if (totalDelegates + models.length > 400) break
         const opts = { ...(spec.effort !== undefined ? { reasoningEffort: spec.effort } : {}) }
         const ticket = ctx.jisi.fanoutNotify(agent, { prompt: spec.prompt }, models, opts)
