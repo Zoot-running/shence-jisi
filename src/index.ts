@@ -140,7 +140,8 @@ export function apply(ctx: Context, config: Config = {}): void {
     async execute(args: { prompt: string; models?: string[]; effort?: string; mode?: string; timeoutMinutes?: number }, exec) {
       const agent = exec.agent
       if (agent === undefined) throw new Error('jisi_fanout requires a calling agent')
-      const models = args.models ?? (await ctx.jisi.listModels()).map(m => m.id)
+      // F34: 缺省 = 便宜档(flash 系 + glm-flash); 贵模型只显式才上(run 17923: kimi fanout ¥100 实锤)。
+      const models = args.models ?? (await ctx.jisi.listModels()).map(m => m.id).filter(m => fanoutDefaultModels.includes(m))
       if (models.length === 0) return 'jisi_fanout: no models registered'
       const opts = {
         ...(args.effort !== undefined ? { reasoningEffort: args.effort } : {}),
