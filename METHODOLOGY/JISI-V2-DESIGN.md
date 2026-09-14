@@ -80,6 +80,44 @@ fanoutSelection:
 - execution 侧独立配置,默认 top-n n=1;失败升级走第 3 层;
 - 主 agent 仍掌决策权,pick 只给候选+理由。
 
+## 第 3 层:失败升级路径 + 二次思路带入(定稿)
+
+### 3.1 每题状态机(宿主 runner 持有)
+```
+R1: fanout(默认一半模型)→ 派单(top-1 执行)
+    思路死亡 = approach-dead-end 终局
+    ── 已死思路/已征集思路 ≥ 0.5(阈值可配)──▶ R2
+R2: 二次 fanout —— 模型集 = R1 模型 ∪ 新增模型(直接加模型增添信息)
+    上下文带入: R1 全部思路(死的+仍在跑的)+ 死路清单 + contextGaps + 归因
+    派单 prompt 同样自带 R1 思路与失败经验
+    全部模型征集穷尽且思路全死 → 判死(兵力≥3 个不同思路)
+hint: 主 agent 专属单点(机制强制), 每题上限 1
+末段(≤60min): 有 hard 未破 → 直接全模型档 R2(覆盖)
+```
+
+### 3.2 归因联动(仅两条)
+- `approach-dead-end` → 升级思路(R2);
+- `context-insufficient` → 补上下文原思路重派;
+- `model-weak` / `platform-issue` → 只记账不触发(**执行模型出问题零先例**:
+  XBOW 088/092 十四路 flash+glm 同族思路全死=思路死非模型弱; 换执行模型路径已删)。
+
+### 3.3 R2 二次带入(自动拼装)
+- prompt 模板: [题目+画像] + [R1 全部思路×归因(死的+在跑的)] + [死路清单] + [contextGaps]
+  + 提问"已知以上死路与缺口后,还有哪些没试过的方向";
+- 语义固化: "怎么解" → "已知 X/Y 之后还有什么方向"。
+
+### 3.4 hint 单点强制
+- `xiaochang_hint` 守卫: 仅主 agent(战役 setup 者)可调, 执行者调用响亮拒绝(防多执行者同时看乱)。
+
+### 3.5 配置
+```yaml
+escalation:
+  deadIdeaRatioThreshold: 0.5   # 已死思路/已征集思路 ≥ 此值 → R2
+  refanoutModelMode: add        # R2 加模型(不排除已试)
+  refanoutRoundsMax: 2          # 征集穷尽轮数(全部模型问过一遍为止)
+  minTroopsBeforeFail: 3        # 判死兵力下限
+  endgameMinutes: 60            # 末段阈值
+```
+
 ## 待办(记录在案,后续迭代)
 - **预算约束降权**: 契合度不接预算;预算裁决放宿主调度层,接口留 `budgetBand`。
-- 第 3 层(失败升级路径 + 二次思路带入)待讨论定稿。
