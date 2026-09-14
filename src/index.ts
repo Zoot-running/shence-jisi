@@ -11,6 +11,10 @@ import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { ModelLedger, type ModelLedgerData } from './model-ledger.ts'
+import { ModelLedgerV2, QUESTION_TYPES, difficultyBucket, type Attribution, type Dimension, type QuestionType, type RankEntry } from './model-ledger-v2.ts'
+import { calibratedDifficulty, difficultyState, observeDifficulty, priorFromScore } from './difficulty.ts'
+import { priorsFor } from './benchmark-priors.ts'
+import { failWeight, winWeight } from './score.ts'
 import { readBalanceExhausted } from '@shence/dsh-compat'
 import { createJisiService } from './service.ts'
 import { attachUsageMeter } from './usage-meter.ts'
@@ -54,6 +58,15 @@ export interface Config {
    * 智谱钱包 2026-09-13 归零(充值400/已花400)、kimi 贵——都只显式才上。
    * 这不是限制——agent 想多视角随时可显式 models；是修掉"没指定=全模型"的危险兜底。 */
   fanoutDefaultModels?: string[]
+  /** v2 取数策略(JISI-V2-DESIGN 2.4): fanout 缺省按 pick 排名取 top-fraction(默认 0.5=目录上半)。 */
+  fanoutSelection?: { strategy?: 'top-fraction' | 'top-n' | 'all'; fraction?: number; n?: number; min?: number; max?: number }
+  /** v2 账本: 三层收缩强度 / 改名继承 / 退役作废(JISI-V2-DESIGN 第 1 层)。 */
+  shrinkageStrength?: number
+  modelAliases?: Record<string, string>
+  voidModels?: string[]
+  /** 对数权重旋钮(第 0 层, 默认 1)。 */
+  kW?: number
+  kF?: number
 }
 
 export function apply(ctx: Context, config: Config = {}): void {
@@ -120,11 +133,61 @@ export function apply(ctx: Context, config: Config = {}): void {
       writeFileSync(ledgerPath, JSON.stringify(ledger.toJSON()))
     } catch { /* 落盘失败不致命 */ }
   }
+  // ── v2 决策内核账本(第 1 层) ──
+  const ledgerV2Path = join(process.env.DSH_HOME ?? '.', 'storages', 'jisi-model-ledger-v2.json')
+  let ledgerV2 = new ModelLedgerV2({
+    shrinkageStrength: config.shrinkageStrength ?? 5,
+    modelAliases: config.modelAliases ?? {},
+    voidModels: config.voidModels ?? [],
+  })
+  try {
+    if (existsSync(ledgerV2Path)) ledgerV2 = ModelLedgerV2.fromJSON(JSON.parse(readFileSync(ledgerV2Path, 'utf8')), {
+      shrinkageStrength: config.shrinkageStrength ?? 5,
+      modelAliases: config.modelAliases ?? {},
+      voidModels: config.voidModels ?? [],
+    })
+    else if (existsSync(ledgerPath)) {
+      // 迁移: 旧账本 execution 记录折成 v2(题型 misc、权重 1、难度按 key)。
+      const legacy = ModelLedger.fromJSON(JSON.parse(readFileSync(ledgerPath, 'utf8')))
+      for (const row of legacy.summary()) {
+        if (row.dimension !== 'execution') continue
+        const diff = Number(row.key) || priorFromScore(300)
+        for (let i = 0; i < row.attempts; i += 1) {
+          ledgerV2.record({ model: row.model, dimension: 'execution', qtype: 'misc', difficulty: diff, weight: 1, win: i < row.wins, source: 'observation', note: 'migrated-legacy' })
+        }
+      }
+    }
+  } catch { /* v2 账本损坏: 空账本起跑 */ }
+  const persistLedgerV2 = (): void => {
+    try {
+      mkdirSync(join(ledgerV2Path, '..'), { recursive: true })
+      writeFileSync(ledgerV2Path, JSON.stringify(ledgerV2.toJSON()))
+    } catch { /* 落盘失败不致命 */ }
+  }
+  // 采纳裁决登记: code → 采纳条目(终局对账用)。
+  const adoptions = new Map<string, Array<{ reportId: string; model: string; difficulty: number; weight: number }>>()
+  const kW = config.kW ?? 1
+  const kF = config.kF ?? 1
+  const sel = config.fanoutSelection ?? {}
+  const fanoutSel = {
+    strategy: sel.strategy ?? 'top-fraction',
+    fraction: sel.fraction ?? 0.5,
+    n: sel.n ?? 3,
+    min: sel.min ?? 1,
+    max: sel.max ?? 0,
+  }
+  const selectModels = (ranked: RankEntry[]): RankEntry[] => {
+    let picked = ranked
+    if (fanoutSel.strategy === 'top-n') picked = ranked.slice(0, fanoutSel.n)
+    else if (fanoutSel.strategy === 'top-fraction') picked = ranked.slice(0, Math.max(fanoutSel.min, Math.round(ranked.length * fanoutSel.fraction)))
+    if (fanoutSel.max > 0) picked = picked.slice(0, fanoutSel.max)
+    return picked
+  }
   // 种子基线立即落盘成运行账本：重启/新进程都从"种子+本 run 战绩"续跑。
   if (seeded) persistLedger()
 
   const jisiService = createJisiService(ctx, provider, ledger, persistLedger, disabledModels)
-  // F35: 余额隔离查询(供 runner 派单 F8 护栏复用)。
+  // v2 决策内核 + F35 余额隔离查询(供 runner 复用)。
   ctx.provide('jisi', {
     ...jisiService,
     isModelQuarantined: async (model: string): Promise<boolean> => {
@@ -133,6 +196,46 @@ export function apply(ctx: Context, config: Config = {}): void {
         const info = catalog.find(m => m.id === model)
         return info !== undefined && exhaustedProviders().has(info.provider)
       } catch { return false }
+    },
+    /** v2 加权入账(第 0/1 层)。 */
+    recordV2: (r: { model: string; dimension: Dimension; qtype: QuestionType; difficulty: number; weight: number; win: boolean; attribution?: Attribution; elapsedMin?: number; firstTry?: boolean; note?: string }): void => {
+      ledgerV2.record({ ...r, source: 'observation' })
+      persistLedgerV2()
+    },
+    /** 终局对账(采纳的思路): 胜不动; 败且 approach-dead-end → 罚思路模型。 */
+    settleAdoptions: (code: string, win: boolean, attribution: Attribution | undefined): void => {
+      const entries = adoptions.get(code) ?? []
+      if (entries.length === 0) return
+      adoptions.delete(code)
+      if (win) return
+      if (attribution !== 'approach-dead-end') return
+      for (const e of entries) {
+        ledgerV2.record({
+          model: e.model, dimension: 'idea', qtype: 'misc', difficulty: e.difficulty,
+          weight: failWeight(e.difficulty, kF), win: false, attribution, source: 'observation',
+          note: `adopted report ${e.reportId} terminal loss`,
+        })
+      }
+      persistLedgerV2()
+    },
+    ledgerV2: () => ledgerV2,
+    /** 采纳裁决(第 0 层): adopted 即记 idea 正(对数权重)。 */
+    adjudicate: (code: string, difficulty: number, verdicts: Array<{ reportId: string; verdict: 'adopted' | 'not-adopted' | 'pending'; note?: string; model: string }>): string => {
+      const list = adoptions.get(code) ?? []
+      let adopted = 0
+      for (const v of verdicts) {
+        if (v.verdict !== 'adopted') continue
+        const w = winWeight(difficulty, kW)
+        list.push({ reportId: v.reportId, model: v.model, difficulty, weight: w })
+        ledgerV2.record({
+          model: v.model, dimension: 'idea', qtype: 'misc', difficulty,
+          weight: w, win: true, source: 'observation', note: `adopted ${v.reportId}`,
+        })
+        adopted += 1
+      }
+      if (list.length > 0) adoptions.set(code, list)
+      persistLedgerV2()
+      return `adjudicated: ${adopted} adopted (idea +w), ${verdicts.length - adopted} not-adopted/pending (no score). 终局对账: 题胜不加分; 题败且归因 approach-dead-end → 思路模型 −w_f.`
     },
   })
 
@@ -147,10 +250,12 @@ export function apply(ctx: Context, config: Config = {}): void {
       'Fan a prompt out to multiple models in parallel and get their raw reports, unsynthesized. ANY agent may call this at any time — especially when stuck on a hard problem and wanting diverse approaches or fresh ideas. Default mode=notify returns immediately (each model reports independently as it finishes — the slowest never blocks you); mode=collect blocks until timeoutMinutes and returns the settled subset. Every report carries an envelope line [fanout:<id>] [model] [question] so results from multiple fanouts never get mixed up. Use jisi_fanout_drop to stop the remaining thinking once the question is answered (saves tokens).',
     parameters: {
       prompt: { type: 'string', required: true, description: 'The self-contained work/idea prompt sent to every model.' },
-      models: { type: 'array', description: 'Model ids to fan out to. Default: flash family only (glm wallet depleted, kimi expensive); others only when explicitly listed (F34).' },
+      models: { type: 'array', description: 'Model ids to fan out to. Default: v2 pick top-fraction (cheap-tier fallback when qtype/difficulty absent); others only when explicitly listed (F34).' },
       effort: { type: 'string', description: 'Reasoning effort (off/low/high/max) where supported; unsupported efforts are dropped per model.' },
       mode: { type: 'string', description: 'notify (default: return immediately, reports arrive independently) | collect (block for the settled subset).' },
       timeoutMinutes: { type: 'number', description: 'collect mode timeout in minutes (default 8).' },
+      qtype: { type: 'string', description: 'v2: question type (web/crypto/pwn/rev/forensics/misc) for fit-based default selection.' },
+      difficulty: { type: 'number', description: 'v2: calibrated difficulty 0-100 for fit-based default selection.' },
     },
     output: {
       schema: { type: 'string' },
@@ -160,14 +265,29 @@ export function apply(ctx: Context, config: Config = {}): void {
     async execute(args: { prompt: string; models?: string[]; effort?: string; mode?: string; timeoutMinutes?: number }, exec) {
       const agent = exec.agent
       if (agent === undefined) throw new Error('jisi_fanout requires a calling agent')
-      // F34: 缺省 = 便宜档(flash 系 + glm-flash); 贵模型只显式才上(run 17923: kimi fanout ¥100 实锤)。
       // F35: 余额枯竭 provider 的模型自动隔离(缺省剔除; 显式派单响亮失败)。
       const catalog = await ctx.jisi.listModels()
       const exhausted = exhaustedProviders()
-      const models = (args.models ?? catalog.map(m => m.id).filter(m => fanoutDefaultModels.includes(m)))
-        .filter(m => !exhausted.has(catalog.find(c => c.id === m)?.provider ?? ''))
+      const allCatalog = catalog.map(m => m.id)
+      let models: string[]
+      if (args.models !== undefined) {
+        models = args.models
+      } else if (args.qtype !== undefined && args.difficulty !== undefined && QUESTION_TYPES.includes(args.qtype as QuestionType)) {
+        // v2: 缺省 = idea-fit 排名取 top-fraction(第 2 层), 先验=公开基准。
+        const ranked = ledgerV2.rank('idea', args.qtype as QuestionType, args.difficulty, allCatalog, m => {
+          const pr = priorsFor(m, 'idea', args.qtype as QuestionType)
+          return { a: pr.a, b: pr.b }
+        })
+        const picked = selectModels(ranked)
+        models = picked.map(r => r.model)
+        if (models.length === 0) models = allCatalog.filter(m => fanoutDefaultModels.includes(m))
+      } else {
+        // 无题目特征: 便宜档兜底(F34)。
+        models = allCatalog.filter(m => fanoutDefaultModels.includes(m))
+      }
       const blocked = (args.models ?? []).filter(m => exhausted.has(catalog.find(c => c.id === m)?.provider ?? ''))
       if (blocked.length > 0) return `jisi_fanout: 拒绝显式派单 ${blocked.join(', ')}——该 provider 余额已枯竭(隔离中)。换模型; 并把"XX 余额不足"写进最终战报提示用户充值。`
+      models = models.filter(m => !exhausted.has(catalog.find(c => c.id === m)?.provider ?? ''))
       if (models.length === 0) return 'jisi_fanout: no models registered (check 余额隔离)'
       const opts = {
         ...(args.effort !== undefined ? { reasoningEffort: args.effort } : {}),
@@ -251,11 +371,24 @@ export function apply(ctx: Context, config: Config = {}): void {
     },
     isConcurrencySafe: () => true,
     async execute() {
-      const summary = ctx.jisi.ledger.summary().filter(s => !disabledModels.has(s.model))
-      const lines = summary.map(s => `${s.dimension}/${s.key} ${s.model}: ${s.wins}/${s.attempts} (rate ${s.rate.toFixed(2)})`)
       const ex = [...exhaustedProviders()]
+      const lines: string[] = []
+      const seen = new Set<string>()
+      for (const dim of ['execution', 'idea'] as const) {
+        for (const row of ledgerV2.summary(dim)) {
+          if (disabledModels.has(row.model)) continue
+          const key = `${dim}/${row.model}/${row.qtype}`
+          if (seen.has(key)) continue
+          seen.add(key)
+          const eff = isNaN(row.cnyPerDifficulty) ? '—' : `¥${row.cnyPerDifficulty.toFixed(2)}/难度点`
+          const rate = isNaN(row.difficultyPerMin) ? '—' : `${row.difficultyPerMin.toFixed(1)}难度点/min`
+          lines.push(`${dim}/${row.qtype}/d${row.bucket} ${row.model}: mean ${row.mean.toFixed(2)} n=${row.n.toFixed(1)} 效费比 ${eff} 时效 ${rate}`)
+        }
+      }
+      const voids = ledgerV2.all().filter(() => false)
+      void voids
       if (ex.length > 0) lines.push(`⚠️ 余额枯竭隔离: ${ex.join(', ')} —— 相关模型已自动剔除, 请写进最终战报提示用户充值`)
-      if (lines.length === 0) return 'jisi_model_report: ledger is empty (cold start — all candidates equal, cheapest wins)'
+      if (lines.length === 0) return 'jisi_model_report: ledger is empty (cold start — all candidates equal, Thompson explores)'
       return lines.join('\n')
     },
   }))
@@ -326,6 +459,62 @@ export function apply(ctx: Context, config: Config = {}): void {
   }))
 
   // 工具 4：人工判断回记 —— 思路对错/执行质量一句话入账。
+  // 工具 5：v2 契合度打分 —— 按题目特征给双维度候选 + 理由。
+  ctx.tools.register(defineTool({
+    name: 'jisi_pick',
+    description:
+      'V2 model picker (layer 2): rank candidate models for one question by fit = question-type/difficulty posterior (weighted Beta + Thompson) + public-benchmark priors. Returns top candidates per dimension (idea=for fanout, execution=for dispatch) with reasons. The main agent keeps the decision; this is evidence, not authority.',
+    parameters: {
+      qtype: { type: 'string', required: true, description: 'question type: web/crypto/pwn/rev/forensics/misc' },
+      difficulty: { type: 'number', required: true, description: 'calibrated difficulty 0-100' },
+      dimension: { type: 'string', description: 'execution | idea (default both)' },
+    },
+    output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
+    isConcurrencySafe: () => true,
+    async execute(args: { qtype: string; difficulty: number; dimension?: string }) {
+      if (!QUESTION_TYPES.includes(args.qtype as QuestionType)) return `jisi_pick: unknown qtype ${args.qtype} (${QUESTION_TYPES.join('/')})`
+      const catalog = await ctx.jisi.listModels()
+      const allCatalog = catalog.map(m => m.id)
+      const dims: Dimension[] = args.dimension === 'execution' || args.dimension === 'idea' ? [args.dimension] : ['execution', 'idea']
+      const out: string[] = []
+      for (const dim of dims) {
+        const ranked = ledgerV2.rank(dim, args.qtype as QuestionType, args.difficulty, allCatalog, m => {
+          const pr = priorsFor(m, dim, args.qtype as QuestionType)
+          return { a: pr.a, b: pr.b }
+        })
+        out.push(`[${dim}] ${args.qtype}·难度${args.difficulty}:`)
+        let i = 0
+        for (const r of ranked) {
+          i += 1
+          const pr = priorsFor(r.model, dim, args.qtype as QuestionType)
+          const basis = pr.sources.length > 0 ? `先验: ${pr.sources.join('; ')}` : '先验: 均匀(Beta(1,1), Thompson 探索)'
+          out.push(`  ${i}. ${r.model} fit=${r.thompson.toFixed(2)} (后验均值 ${r.mean.toFixed(2)}, n=${r.n.toFixed(1)}) — ${basis}`)
+          if (i >= 5) break
+        }
+      }
+      return out.join('\n')
+    },
+  }))
+
+  // 工具 6：v2 思路裁决 —— 对 fanout 报告批量裁决(第 0 层)。
+  ctx.tools.register(defineTool({
+    name: 'jisi_adjudicate',
+    description:
+      'V2 idea adjudication (layer 0): verdict each fanout report for one challenge in ONE call: adopted (+w idea, log-weighted by difficulty; terminal win adds nothing, terminal loss with approach-dead-end penalizes -w_f) / not-adopted (0, optional note) / pending (0, never auto-degraded). Report ids come from the [fanout:<id>] envelopes.',
+    parameters: {
+      code: { type: 'string', required: true },
+      difficulty: { type: 'number', required: true, description: 'calibrated difficulty 0-100 (from jisi_pick/profile)' },
+      verdicts: { type: 'array', required: true, description: '[{reportId, model, verdict: adopted|not-adopted|pending, note?}]' },
+    },
+    output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
+    isConcurrencySafe: () => false,
+    async execute(args: { code: string; difficulty: number; verdicts: Array<{ reportId: string; model: string; verdict: 'adopted' | 'not-adopted' | 'pending'; note?: string }> }) {
+      if (args.verdicts.length === 0) return 'jisi_adjudicate: empty verdicts'
+      return (ctx.jisi as { adjudicate(code: string, difficulty: number, verdicts: Array<{ reportId: string; verdict: 'adopted' | 'not-adopted' | 'pending'; note?: string; model: string }>): string })
+        .adjudicate(args.code, args.difficulty, args.verdicts)
+    },
+  }))
+
   ctx.tools.register(defineTool({
     name: 'jisi_record',
     description:
