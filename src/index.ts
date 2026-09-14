@@ -166,6 +166,8 @@ export function apply(ctx: Context, config: Config = {}): void {
   }
   // 采纳裁决登记: code → 采纳条目(终局对账用)。
   const adoptions = new Map<string, Array<{ reportId: string; model: string; difficulty: number; weight: number }>>()
+  const adoptionDead = new Map<string, number>()
+  const adoptionAdopted = new Map<string, number>()
   const kW = config.kW ?? 1
   const kF = config.kF ?? 1
   const sel = config.fanoutSelection ?? {}
@@ -209,6 +211,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       adoptions.delete(code)
       if (win) return
       if (attribution !== 'approach-dead-end') return
+      adoptionDead.set(code, (adoptionDead.get(code) ?? 0) + entries.length)
       for (const e of entries) {
         ledgerV2.record({
           model: e.model, dimension: 'idea', qtype: 'misc', difficulty: e.difficulty,
@@ -219,6 +222,20 @@ export function apply(ctx: Context, config: Config = {}): void {
       persistLedgerV2()
     },
     ledgerV2: () => ledgerV2,
+    /** v2 契合度排名(第 2 层, 供 runner 的 xiaochang_refanout 选模)。 */
+    pickRank: async (qtype: string, difficulty: number, dimension: 'execution' | 'idea') => {
+      if (!QUESTION_TYPES.includes(qtype as QuestionType)) return []
+      const catalog = await jisiService.listModels()
+      return ledgerV2.rank(dimension, qtype as QuestionType, difficulty, catalog.map(m => m.id), m => {
+        const pr = priorsFor(m, dimension, qtype as QuestionType)
+        return { a: pr.a, b: pr.b }
+      }).map(r => ({ model: r.model, thompson: r.thompson, mean: r.mean, n: r.n }))
+    },
+    /** v2 升级状态(第 3 层): 该题采纳数/已死数, runner 据此打 ⚠️ 建议。 */
+    adoptionStats: (code: string) => ({
+      adopted: adoptionAdopted.get(code) ?? 0,
+      dead: adoptionDead.get(code) ?? 0,
+    }),
     /** 采纳裁决(第 0 层): adopted 即记 idea 正(对数权重)。 */
     adjudicate: (code: string, difficulty: number, verdicts: Array<{ reportId: string; verdict: 'adopted' | 'not-adopted' | 'pending'; note?: string; model: string }>): string => {
       const list = adoptions.get(code) ?? []
@@ -234,6 +251,7 @@ export function apply(ctx: Context, config: Config = {}): void {
         adopted += 1
       }
       if (list.length > 0) adoptions.set(code, list)
+      if (adopted > 0) adoptionAdopted.set(code, (adoptionAdopted.get(code) ?? 0) + adopted)
       persistLedgerV2()
       return `adjudicated: ${adopted} adopted (idea +w), ${verdicts.length - adopted} not-adopted/pending (no score). 终局对账: 题胜不加分; 题败且归因 approach-dead-end → 思路模型 −w_f.`
     },
