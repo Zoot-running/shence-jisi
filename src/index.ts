@@ -133,31 +133,6 @@ export function apply(ctx: Context, config: Config = {}): void {
       writeFileSync(ledgerPath, JSON.stringify(ledger.toJSON()))
     } catch { /* 落盘失败不致命 */ }
   }
-  // ── v2 决策内核账本(第 1 层) ──
-  const ledgerV2Path = join(process.env.DSH_HOME ?? '.', 'storages', 'jisi-model-ledger-v2.json')
-  let ledgerV2 = new ModelLedgerV2({
-    shrinkageStrength: config.shrinkageStrength ?? 5,
-    modelAliases: config.modelAliases ?? {},
-    voidModels: config.voidModels ?? [],
-  })
-  try {
-    if (existsSync(ledgerV2Path)) ledgerV2 = ModelLedgerV2.fromJSON(JSON.parse(readFileSync(ledgerV2Path, 'utf8')), {
-      shrinkageStrength: config.shrinkageStrength ?? 5,
-      modelAliases: config.modelAliases ?? {},
-      voidModels: config.voidModels ?? [],
-    })
-    else if (existsSync(ledgerPath)) {
-      // 迁移: 旧账本 execution 记录折成 v2(题型 misc、权重 1、难度按 key)。
-      const legacy = ModelLedger.fromJSON(JSON.parse(readFileSync(ledgerPath, 'utf8')))
-      for (const row of legacy.summary()) {
-        if (row.dimension !== 'execution') continue
-        const diff = Number(row.key) || priorFromScore(300)
-        for (let i = 0; i < row.attempts; i += 1) {
-          ledgerV2.record({ model: row.model, dimension: 'execution', qtype: 'misc', difficulty: diff, weight: 1, win: i < row.wins, source: 'observation', note: 'migrated-legacy' })
-        }
-      }
-    }
-  } catch { /* v2 账本损坏: 空账本起跑 */ }
   const persistLedgerV2 = (): void => {
     try {
       mkdirSync(join(ledgerV2Path, '..'), { recursive: true })
@@ -187,6 +162,39 @@ export function apply(ctx: Context, config: Config = {}): void {
   }
   // 种子基线立即落盘成运行账本：重启/新进程都从"种子+本 run 战绩"续跑。
   if (seeded) persistLedger()
+  // ── v2 决策内核账本(第 1 层) ──
+  // 初始化必须在种子/旧账本落盘之后: 沙箱首启时运行账本由种子生成,
+  // 早于此迁移会丢种子经验(18293 实锤: v2 账本空, 冷启动)。
+  const ledgerV2Path = join(process.env.DSH_HOME ?? '.', 'storages', 'jisi-model-ledger-v2.json')
+  let ledgerV2 = new ModelLedgerV2({
+    shrinkageStrength: config.shrinkageStrength ?? 5,
+    modelAliases: config.modelAliases ?? {},
+    voidModels: config.voidModels ?? [],
+  })
+  try {
+    if (existsSync(ledgerV2Path)) {
+      ledgerV2 = ModelLedgerV2.fromJSON(JSON.parse(readFileSync(ledgerV2Path, 'utf8')), {
+        shrinkageStrength: config.shrinkageStrength ?? 5,
+        modelAliases: config.modelAliases ?? {},
+        voidModels: config.voidModels ?? [],
+      })
+    } else {
+      // 迁移源优先级: 运行账本 > 种子文件(种子只含 execution, 题型 misc、权重 1)。
+      const migrateSource = existsSync(ledgerPath) ? ledgerPath
+        : existsSync(seedLedgerPath) ? seedLedgerPath : undefined
+      if (migrateSource !== undefined) {
+        const legacy = ModelLedger.fromJSON(JSON.parse(readFileSync(migrateSource, 'utf8')))
+        for (const row of legacy.summary()) {
+          if (row.dimension !== 'execution') continue
+          const diff = Number(row.key) || priorFromScore(300)
+          for (let i = 0; i < row.attempts; i += 1) {
+            ledgerV2.record({ model: row.model, dimension: 'execution', qtype: 'misc', difficulty: diff, weight: 1, win: i < row.wins, source: 'observation', note: 'migrated-legacy' })
+          }
+        }
+        persistLedgerV2()
+      }
+    }
+  } catch { /* v2 账本损坏: 空账本起跑 */ }
 
   const jisiService = createJisiService(ctx, provider, ledger, persistLedger, disabledModels)
   // v2 决策内核 + F35 余额隔离查询(供 runner 复用)。
