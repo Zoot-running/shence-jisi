@@ -11,7 +11,7 @@ import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { ModelLedger, type ModelLedgerData } from './model-ledger.ts'
-import { readBalanceExhausted } from '@shence/llm-openai-compat'
+import { readBalanceExhausted } from '@shence/dsh-compat'
 import { createJisiService } from './service.ts'
 import { attachUsageMeter } from './usage-meter.ts'
 
