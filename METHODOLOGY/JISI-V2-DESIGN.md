@@ -121,3 +121,33 @@ escalation:
 
 ## 待办(记录在案,后续迭代)
 - **预算约束降权**: 契合度不接预算;预算裁决放宿主调度层,接口留 `budgetBand`。
+
+## 第 6 层:不可行性判定(判死)——序贯弃权框架(定稿)
+
+> 2026-09-15 定稿。业界依据: FeasiGen 假继续率 73.9%(arXiv:2605.28532)、
+> 弃权=序贯决策(Gravity7)、SPRT/拒绝选项非对称损失(Franc 2023)、ACL 2026 Knowing When to Quit。
+
+### 6.1 三层证据
+- **L1 环境门**(便宜前置): 平台/容器/目标可达性——与 platform-issue 归因共用信号;
+- **L2 统计停止**(中价): 证据 = filtered-failed 计数(滤平台故障)+ 无进展时长 + 难度后验;
+  停止当 继续的期望边际收益 < 槽位机会成本; **非对称保守**(错弃可解题 > 有界超支);
+- **L3 攻击面覆盖饱和**(领域先验): 死路清单(已试)÷ 题型攻击面宇宙(该试的)≥0.8 才谈判死。
+
+### 6.2 边界(知识归位)
+- **集思只持有泛化裁决器**(stopping-rule: 输入全是数字/枚举, 输出 continue/escalate/judge-dead);
+- **攻击面宇宙是夜不收的领域知识**(yebushou src/attack-surfaces.ts, 通用攻击部分;
+  校场 CTF 部分在 runner 的消费侧)——集思不认识题型词汇, 只收"覆盖率"数字。
+
+### 6.3 升级与判死的分工(同一证据链, 两个阈值)
+- M1(过滤失败 ≥2 且 R2 未穷尽)→ escalate(⚠️);
+- 判死(⛔)需五条件齐备: 过滤失败 ≥4 + 覆盖 ≥0.8 + 模型征集穷尽 + 兵力 ≥3 + R2 穷尽;
+- 判死建议不带奖励(防"放弃被奖励"的过度弃权反噬); 裁决由 runner 机制给, 主 agent 终裁。
+
+### 6.4 故障过滤
+- dsh-compat 检测连续 TRANSPORT 突发 → outage 窗口 sidecar;
+- runner 的 filtered-failed 剔除: 故障窗口内 + provider 错误签名(TRANSPORT/MISSING_CREDENTIAL/rate limit/insufficient/余额/no API key);
+- 目标侧 503 等不自动滤(两级归因: 执行者提议 platform-issue, 主 agent 终裁)。
+
+### 6.5 末段自动 R2
+- status 在预算 ≤60min 且 hard 未破时, 插件直接以主 agent 为 parent 发二次征集(pick 加模型),
+  每题每窗口一次(autoR2 去重); agent 可 jisi_fanout_drop 改判。
