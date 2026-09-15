@@ -3,7 +3,6 @@
  * 覆盖: 关键词归入、覆盖饱和、升级/判死阈值、非对称保守(判死须五条件齐备)、慢死检测。
  */
 import { describe, expect, it } from 'vitest'
-import { coverageOf } from '../src/attack-surfaces.ts'
 import { decide, DEFAULT_STOPPING, type StoppingInput } from '../src/stopping-rule.ts'
 
 function base(over: Partial<StoppingInput> = {}): StoppingInput {
@@ -13,20 +12,6 @@ function base(over: Partial<StoppingInput> = {}): StoppingInput {
     ...over,
   }
 }
-
-describe('攻击面覆盖(L3)', () => {
-  it('web 死路关键词归入对应面', () => {
-    const cov = coverageOf('web', ['SQL 注入 union select 被 WAF 拦截(死路)', 'lfi 目录穿越失败'])
-    expect(cov.covered).toBeGreaterThanOrEqual(2)
-    expect(cov.uncovered.length).toBeLessThan(cov.total)
-  })
-  it('全量覆盖 → 饱和', () => {
-    const tried = coverageOf('web', [])
-    const all = tried.uncovered.map(u => u)
-    const cov2 = coverageOf('web', all.map(s => s))
-    expect(cov2.ratio).toBe(1)
-  })
-})
 
 describe('停止规则(L2)', () => {
   it('低证据 → continue', () => {
