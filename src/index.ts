@@ -15,6 +15,8 @@ import { ModelLedgerV2, QUESTION_TYPES, difficultyBucket, type Attribution, type
 import { calibratedDifficulty, difficultyState, observeDifficulty, priorFromScore } from './difficulty.ts'
 import { priorsFor } from './benchmark-priors.ts'
 import { failWeight, winWeight } from './score.ts'
+import { coverageOf } from './attack-surfaces.ts'
+import { decide, type StoppingInput, type StoppingResult } from './stopping-rule.ts'
 import { readBalanceExhausted } from '@shence/dsh-compat'
 import { createJisiService } from './service.ts'
 import { attachUsageMeter } from './usage-meter.ts'
@@ -238,6 +240,12 @@ export function apply(ctx: Context, config: Config = {}): void {
         const pr = priorsFor(m, dimension, qtype as QuestionType)
         return { a: pr.a, b: pr.b }
       }).map(r => ({ model: r.model, thompson: r.thompson, mean: r.mean, n: r.n }))
+    },
+    /** v6 不可行性判定(第 6 层): 停止规则裁决 + 攻击面覆盖, 供 runner 的 status 集成。 */
+    judge: (input: StoppingInput): StoppingResult => decide(input),
+    coverage: (qtype: string, triedTexts: string[]): { ratio: number; covered: number; total: number; uncovered: string[] } => {
+      const r = coverageOf((QUESTION_TYPES.includes(qtype as QuestionType) ? qtype : 'misc') as QuestionType, triedTexts)
+      return { ratio: r.ratio, covered: r.covered, total: r.total, uncovered: r.uncovered }
     },
     /** v2 升级状态(第 3 层): 该题采纳数/已死数, runner 据此打 ⚠️ 建议。 */
     adoptionStats: (code: string) => ({
