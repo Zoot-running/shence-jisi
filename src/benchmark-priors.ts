@@ -30,6 +30,9 @@ export interface BenchmarkSource {
  *   CyberGym 88.1 / SEC-Bench Pro 62.8 / ExploitGym 15.3
  *   (https://api-docs.deepseek.com/updates/);
  *   n_tasks 为估计值: CyberGym≈100 / SEC-Bench≈500 / ExploitGym≈40(记档, 可校准)。
+ * - v7.6 补录(2026-09-17, 公开 CyberGym 榜单 https://www.datalearner.com/benchmarks/cybergym;
+ *   公共数据, 非历史答题记忆, 规则 6 合规): deepseek-v4-pro 83.3 / glm-5.3 84.5 / kimi-k3 80。
+ *   like-for-like: 榜单是 GLM-5.3 强版, glm-5.3-flash 变体不挂此先验(不虚标)。
  * - 其余模型无公开安全域数据 → Beta(1,1) 均匀, 探索交给 Thompson。
  */
 export const BENCHMARK_PRIORS: Record<string, BenchmarkSource[]> = {
@@ -37,6 +40,15 @@ export const BENCHMARK_PRIORS: Record<string, BenchmarkSource[]> = {
     { name: 'CyberGym', score: 88.1, nTasks: 100, dimension: 'execution', qtype: 'misc', source: 'DeepSeek changelog 2026-09-10', date: '2026-09-10' },
     { name: 'SEC-Bench Pro', score: 62.8, nTasks: 500, dimension: 'idea', qtype: 'misc', source: 'DeepSeek changelog 2026-09-10', date: '2026-09-10' },
     { name: 'ExploitGym', score: 15.3, nTasks: 40, dimension: 'execution', qtype: 'pwn', source: 'DeepSeek changelog 2026-09-10', date: '2026-09-10' },
+  ],
+  'deepseek-v4-pro': [
+    { name: 'CyberGym', score: 83.3, nTasks: 100, dimension: 'execution', qtype: 'misc', source: 'datalearner CyberGym 榜单', date: '2026-09-17' },
+  ],
+  'glm-5.3': [
+    { name: 'CyberGym', score: 84.5, nTasks: 100, dimension: 'execution', qtype: 'misc', source: 'datalearner CyberGym 榜单', date: '2026-09-17' },
+  ],
+  'kimi-k3': [
+    { name: 'CyberGym', score: 80, nTasks: 100, dimension: 'execution', qtype: 'misc', source: 'datalearner CyberGym 榜单', date: '2026-09-17' },
   ],
 }
 
