@@ -173,13 +173,19 @@ export function createJisiService(
           }
         }
         // 前台：一次性子代理，等结算。
+        // v8.3 风神/锚定 A/B(实验): DSH_ANCHOR_TEST=1 时, deepseek-v4-pro 子代理首请求
+        // 用 RL 训练布局 persona 覆盖部署级 persona(社区"锚定"假说, 待本地 A/B 验证)。
+        const anchor = process.env.DSH_ANCHOR_TEST === '1' && opts.model === 'deepseek-v4-pro'
+          ? { persona: 'You are a helpful software engineer assistant.' }
+          : {}
         const run = await ctx.subagents.start(provider, {
           label: 'jisi-delegate',
           prompt,
           parent,
           signal: opts.signal ?? new AbortController().signal,
           ...(Object.keys(agentOptions).length > 0 ? { agentOptions } : {}),
-        })
+          ...anchor,
+        } as never)
         const result = await run.result
         void settleRun(run)
         const output = textOfBlocks(result.output)
