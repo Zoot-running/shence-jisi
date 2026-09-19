@@ -36,6 +36,18 @@ export interface BenchmarkSource {
  * - 其余模型无公开安全域数据 → Beta(1,1) 均匀, 探索交给 Thompson。
  */
 export const BENCHMARK_PRIORS: Record<string, BenchmarkSource[]> = {
+  'deepseek-v4-flash': [
+    { name: 'CyberGym', score: 88.1, nTasks: 100, dimension: 'execution', qtype: 'misc', source: 'benchgen CyberGym 榜单 2026-09(与 deepseek-flash 同源 V4.1-Flash)', date: '2026-09-19' },
+  ],
+  'glm-5.1': [
+    { name: 'CyberGym', score: 68.7, nTasks: 100, dimension: 'execution', qtype: 'misc', source: 'benchgen CyberGym 榜单 2026-09', date: '2026-09-19' },
+  ],
+  'glm-4.7': [
+    { name: 'CyberGym', score: 23.5, nTasks: 100, dimension: 'execution', qtype: 'misc', source: 'benchgen CyberGym 榜单 2026-09', date: '2026-09-19' },
+  ],
+  'kimi-k2-5': [
+    { name: 'CyberGym', score: 41.3, nTasks: 100, dimension: 'execution', qtype: 'misc', source: 'benchgen CyberGym 榜单 2026-09', date: '2026-09-19' },
+  ],
   'deepseek-flash': [
     { name: 'CyberGym', score: 88.1, nTasks: 100, dimension: 'execution', qtype: 'misc', source: 'DeepSeek changelog 2026-09-10', date: '2026-09-10' },
     { name: 'SEC-Bench Pro', score: 62.8, nTasks: 500, dimension: 'idea', qtype: 'misc', source: 'DeepSeek changelog 2026-09-10', date: '2026-09-10' },

@@ -102,6 +102,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     'kimi-k2.7-code-highspeed': { input: 13, output: 54, cacheRead: 2.6 },
     'glm-5.3': { input: 8, output: 28, cacheRead: 2 },      // 官方 2026-09-12：8/28/缓存命中2（原 2.3 误记，更）
     'glm-5.3-flash': { input: 0.8, output: 2.8, cacheRead: 0.23 }, // 官方 2026-09-12：0.8/2.8/0.23 ✓（ESTIMATE 升格）
+    'glm-5.1': { input: 8, output: 28, cacheRead: 2 }, // ESTIMATE(比照 glm-5.3); 平台网关是否支持未验证——手动显式派单前先验证
     'glm-4.7': { input: 4, output: 16, cacheRead: 0.8 },    // 官方阶梯（取最高档保守）：2/8/0.4(出<0.2K)、3/14/0.6(出≥0.2K)、4/16/0.8(入≥32K)
     'glm-4.6': { input: 1, output: 4 },          // 文本版已从官方价页移除（仅 4.6V/私有部署在售）；ESTIMATE 保留待实扣校准
     'glm-4.5-air': { input: 1.2, output: 8, cacheRead: 0.24 }, // 官方阶梯（取最高档保守）：0.8/2/0.16、0.8/6/0.16、1.2/8/0.24(入≥32K)
